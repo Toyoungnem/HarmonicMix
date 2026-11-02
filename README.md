@@ -4,6 +4,12 @@ Assistant local de suggestions de transitions pour Serato DJ Lite ou Traktor. Le
 
 ## Démarrer
 
+### Version Windows prête à lancer
+
+[Télécharger HarmonicMix.exe](https://github.com/Toyoungnem/HarmonicMix/releases/latest/download/HarmonicMix.exe), puis double-cliquer sur le fichier téléchargé. Python n'est pas nécessaire. Serato DJ Lite ou Traktor doit être installé séparément, et Harmonic Mix utilise les historiques présents sur l'ordinateur.
+
+### Depuis les sources
+
 Pour lancer le programme avec Python :
 
 ```powershell
