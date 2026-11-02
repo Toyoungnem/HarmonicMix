@@ -1,0 +1,21 @@
+# Python cache and environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local history and personal Serato data
+*.sqlite3
+*.db
+*.session
+*.log
+
+# Generated Windows executable and PyInstaller output
+/build/
+/dist/
+/*.spec
+
+# Local editor and environment files
+.vscode/
+.env
+.env.*

@@ -1,0 +1,4 @@
+# Interface arrondie et haute résolution.
+customtkinter==6.0.0
+# Optionnel: repli pour lire les tags des fichiers audio si la base Serato est absente.
+mutagen>=1.47
