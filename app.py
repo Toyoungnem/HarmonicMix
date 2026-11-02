@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import ctypes
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 import sys
@@ -12,6 +13,7 @@ from shutil import copy2
 from tkinter import simpledialog
 
 from database import HistoryDatabase
+from artwork import read_cover
 from live import latest_logged_track
 from metadata import AudioMetadata, MutagenFile, read_metadata
 from parser import DEFAULT_SESSIONS_DIR, TrackPlay, parse_session
@@ -53,6 +55,11 @@ class SuggestionApp:
         self.current_play = None
         self.session_plays = []
         self.live_log_time = None
+        self.search_busy = False
+        self.search_refresh_pause_until = 0.0
+        self.search_cooldown_generation = 0
+        self.cover_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="hm-cover")
+        self.cover_requests = set()
         self.ui = SuggestionUI(
             root,
             on_refresh=lambda: self.refresh(schedule=False),
@@ -60,6 +67,8 @@ class SuggestionApp:
             on_search=self.search_suggestion,
             on_profile_select=self.change_profile,
             on_software_select=self.select_software,
+            on_stats=self.show_stats,
+            on_cover_request=self._request_cover,
             profile_name=self.profile["name"],
             software=self.software,
         )
@@ -108,6 +117,59 @@ class SuggestionApp:
         self.last_native_signature = None
         self.refresh(schedule=False)
 
+    def show_stats(self):
+        self.ui.show_stats(self._transition_statistics())
+
+    def _transition_statistics(self):
+        software_name = "Serato DJ" if self.software == "serato" else "Traktor"
+        if self.native_snapshot is not None and (self.using_serato_database or self.using_traktor):
+            title_by_path = {play.path.casefold(): play.title for play in self.history_plays}
+            transitions = []
+            for source, destinations in self.native_snapshot.transitions.items():
+                for target, count in destinations.items():
+                    transitions.append({
+                        "source_path": source,
+                        "source_title": title_by_path.get(source, Path(source).stem),
+                        "target_path": target,
+                        "target_title": title_by_path.get(target, Path(target).stem),
+                        "count": int(count),
+                    })
+            transitions.sort(key=lambda row: (-row["count"],
+                                               row["source_title"].casefold(),
+                                               row["target_title"].casefold()))
+            stats = {
+                "sessions": self.native_snapshot.session_count,
+                "tracks": self.native_snapshot.played_track_count,
+                "transitions": transitions,
+                "session_activity": self.native_snapshot.session_activity or [],
+            }
+        elif self.using_traktor:
+            stats = {"sessions": 0, "tracks": 0, "transitions": [], "session_activity": []}
+        else:
+            stats = self.db.transition_statistics()
+
+        destinations = {}
+        for row in stats["transitions"]:
+            key = row["target_path"].casefold()
+            entry = destinations.setdefault(key, {
+                "title": row["target_title"] or Path(row["target_path"]).stem,
+                "path": row["target_path"],
+                "count": 0,
+            })
+            entry["count"] += row["count"]
+        stats["destinations"] = sorted(
+            destinations.values(), key=lambda item: (-item["count"], item["title"].casefold()))[:5]
+        stats["distinct_transitions"] = len(stats["transitions"])
+        stats["transition_count"] = sum(row["count"] for row in stats["transitions"])
+        stats["top_transitions"] = stats["transitions"][:10]
+        stats["software"] = software_name
+        stats["last_session"] = self._last_session_date() or "Aucune session trouvée"
+        stats["active_session"] = bool(
+            self.using_serato_database and self.native_snapshot
+            and self.native_snapshot.active_session
+        )
+        return stats
+
     def _last_session_date(self):
         timestamp = None
         if self.native_snapshot is not None:
@@ -133,6 +195,10 @@ class SuggestionApp:
             return False
 
     def refresh(self, schedule=True):
+        if self.search_busy or time.monotonic() < self.search_refresh_pause_until:
+            if schedule:
+                self.root.after(1200, self.refresh)
+            return
         try:
             if self.software == "traktor":
                 snapshot = self.traktor_library.load(force=not schedule)
@@ -305,8 +371,19 @@ class SuggestionApp:
         candidates = list(unique.values())
         metadata = {path: self._metadata(path) for path, *_ in candidates}
         played_paths = {track.path for track in self.session_plays}
+        recent_paths = [track.path for track in self.session_plays[-4:-1]]
+        recent_bpms = [track.bpm for track in self.session_plays[-4:]
+                       if track.bpm is not None]
+        bpm_momentum = 0
+        if len(recent_bpms) >= 2 and recent_bpms[-1] - recent_bpms[0] >= 2:
+            bpm_momentum = 1
+        elif len(recent_bpms) >= 2 and recent_bpms[-1] - recent_bpms[0] <= -2:
+            bpm_momentum = -1
         suggestions = rank_candidates(
-            play.path, current_meta, candidates, metadata, played_paths)
+            play.path, current_meta, candidates, metadata, played_paths,
+            recent_paths=recent_paths,
+            bpm_momentum=bpm_momentum,
+        )
 
         display_title = play.title or Path(play.path).name
         display_detail = "  ·  ".join(details) or (
@@ -322,7 +399,10 @@ class SuggestionApp:
             session_date=self._last_session_date(),
             session_detail=("Traktor · session archivée" if self.using_traktor
                             else "Serato DJ · historique local"),
+            cover_path=play.path,
         )
+        if getattr(self.ui, "active_page", "") == "stats":
+            self.show_stats()
 
     def _metadata(self, path):
         native = self.native_metadata.get(path.casefold())
@@ -332,8 +412,37 @@ class SuggestionApp:
             self.meta_cache[path] = read_metadata(path)
         return self.meta_cache[path]
 
+    def _request_cover(self, path):
+        key = str(path).casefold()
+        if key in self.cover_requests:
+            return
+        self.cover_requests.add(key)
+        future = self.cover_executor.submit(read_cover, str(path))
+
+        def complete(result):
+            try:
+                data = result.result()
+            except Exception:
+                data = None
+            self.cover_requests.discard(key)
+            try:
+                self.root.after(0, self.ui.set_cover, str(path), data)
+            except Exception:
+                pass
+
+        future.add_done_callback(complete)
+
     def search_suggestion(self, suggestion):
-        self.ui.show_search_result(f"Recherche en cours : {suggestion.title}…")
+        if self.search_busy:
+            self.ui.show_search_result(
+                "Recherche déjà en cours. Attends qu'elle se termine…", busy=True)
+            return
+        self.search_busy = True
+        software_name = "Serato DJ" if self.software == "serato" else "Traktor"
+        self.ui.show_search_result(
+            f"Recherche de « {suggestion.title} » dans {software_name}…",
+            busy=True,
+        )
         try:
             complete = lambda error: self._search_finished(suggestion, error)
             if self.software == "traktor":
@@ -344,16 +453,31 @@ class SuggestionApp:
                     suggestion.artist, on_complete=complete,
                 )
         except (OSError, RuntimeError, ValueError) as exc:
-            self.ui.show_search_result(str(exc), success=False)
+            self._search_finished(suggestion, str(exc))
 
     def _search_finished(self, suggestion, error):
+        self.search_busy = False
+        # Laisse le logiciel DJ terminer son filtrage avant la prochaine lecture
+        # de sa base SQLite, susceptible d'être occupée pendant la recherche.
+        self.search_refresh_pause_until = time.monotonic() + 4.0
+        self.search_cooldown_generation += 1
+        generation = self.search_cooldown_generation
         if error:
-            self.ui.show_search_result(error, success=False)
+            self.ui.show_search_result(error, success=False, pause_refresh=True)
         else:
             software_name = "Traktor" if self.software == "traktor" else "Serato"
             self.ui.show_search_result(
-                f"Recherche envoyée dans {software_name} : {suggestion.title}. Vérifie le résultat puis choisis le deck."
+                f"Recherche envoyée dans {software_name}. Vérifie le résultat puis choisis le deck.",
+                pause_refresh=True,
             )
+        self.root.after(4000, lambda: self._resume_search_refresh(generation))
+
+    def _resume_search_refresh(self, generation):
+        if generation != self.search_cooldown_generation:
+            return
+        self.search_refresh_pause_until = 0.0
+        if not self.search_busy:
+            self.ui.refresh_button.configure(state="normal")
 
     @staticmethod
     def _track_identity(title, artist, path):
@@ -368,6 +492,7 @@ class SuggestionApp:
 
     def close(self):
         self.native_library.close()
+        self.cover_executor.shutdown(wait=False, cancel_futures=True)
         self.root.destroy()
 
 

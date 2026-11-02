@@ -12,6 +12,7 @@ python -m PyInstaller --noconfirm --clean --windowed --onefile ^
   --name HarmonicMix ^
   --icon HarmonicMix.ico ^
   --add-data "HarmonicMix.ico;." ^
+  --add-data "HarmonicMix.png;." ^
   --collect-all customtkinter ^
   --collect-all mutagen ^
   app.py

@@ -1,5 +1,7 @@
 # Harmonic Mix
 
+![Logo Harmonic Mix](HarmonicMix.png)
+
 [⬇️ Télécharger Harmonic Mix pour Windows](https://github.com/Toyoungnem/HarmonicMix/releases/latest/download/HarmonicMix.exe) · [Voir la release](https://github.com/Toyoungnem/HarmonicMix/releases/latest)
 
 Assistant local de suggestions de transitions pour Serato DJ Lite ou Traktor. Le classement combine les transitions observées dans les sets, le BPM et la tonalité Camelot. L'application ne capte pas le son et fonctionne hors ligne.
@@ -23,10 +25,13 @@ Sous Windows, `build_exe.bat` génère une application autonome dans `dist/Harmo
 
 ## Utilisation
 
-- Sur l'écran d'accueil, choisis **Serato DJ** ou **Traktor**. Ce choix et le nom du profil restent enregistrés localement.
+- Sur l'écran d'accueil, choisis **Serato DJ** ou **Traktor** pour les suggestions, ou **Dashboard** pour ouvrir l'analyse plein écran. Le logiciel DJ choisi et le nom du profil restent enregistrés localement.
+- Le Dashboard affiche la version de l'application, les sets et morceaux analysés, les transitions fréquentes et une chronologie des genres tagués par set. Les transitions et le BPM moyen du set sont indiqués à côté de chaque période ; les données se mettent à jour automatiquement.
+- Les pochettes embarquées dans les fichiers audio s'affichent pour le morceau courant, les suggestions et les transitions du Dashboard. Elles sont lues depuis le disque en arrière-plan ; aucune image n'est téléchargée.
 - L'écran d'accueil affiche la piste de référence et permet d'ouvrir le panneau de suggestions.
 - Les suggestions rouges, orange et jaunes s'appuient sur les transitions observées ; les bleues sont des propositions harmoniques sans transition connue.
-- Sélectionne une suggestion puis **Chercher dans…** pour lancer la recherche dans le logiciel choisi. Vérifie le résultat puis charge-le sur le deck.
+- Sélectionne une suggestion puis **Chercher dans…** ou double-clique dessus (confirmation demandée) pour lancer la recherche dans le logiciel choisi. Vérifie le résultat puis charge-le manuellement sur le deck.
+- Les morceaux joués très récemment sont pénalisés pour limiter les répétitions. Une petite tendance de BPM sur les derniers morceaux aide à maintenir une montée ou une baisse progressive du set ; le logiciel n'analyse pas le signal audio.
 - Le panneau vérifie les changements d'historique toutes les cinq secondes et reste épinglé au premier plan par défaut.
 
 Les profils sont de simples espaces de données locaux, sans mot de passe, chiffrement ni synchronisation. Ils conviennent pour séparer les bibliothèques sur un même PC, pas pour protéger les données entre utilisateurs du même compte Windows.

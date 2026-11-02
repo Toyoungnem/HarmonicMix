@@ -5,6 +5,7 @@ import os
 import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 
@@ -31,6 +32,7 @@ class HistoryPlay:
     start_time: int
     end_time: int
     played: bool
+    genre: str = ""
 
 
 @dataclass
@@ -42,6 +44,9 @@ class HistorySnapshot:
     active_session: bool
     signature: tuple
     last_session_timestamp: int | None
+    session_count: int = 0
+    played_track_count: int = 0
+    session_activity: list[dict] | None = None
 
 
 class SeratoLibrary:
@@ -97,7 +102,7 @@ class SeratoLibrary:
                 self._data_version = data_version
                 return self._snapshot
             rows = conn.execute("""
-                SELECT h.session_id, h.id AS entry_id, h.portable_id, h.name, h.artist,
+                SELECT h.session_id, h.id AS entry_id, h.portable_id, h.name, h.artist, h.genre,
                        h.bpm, h.key, h.start_time, h.end_time, h.played,
                        s.start_time AS session_start, s.end_time AS session_end
                 FROM history_entry h
@@ -120,6 +125,7 @@ class SeratoLibrary:
             start_time=int(row["start_time"] or 0),
             end_time=int(row["end_time"] or 0),
             played=bool(row["played"]),
+            genre=row["genre"] or "",
         ) for row in rows if row["portable_id"]]
 
         transitions: dict[str, Counter] = defaultdict(Counter)
@@ -145,8 +151,33 @@ class SeratoLibrary:
         active_deck_plays = [p for p in session_plays if p.end_time == -1]
         current_play = max(active_deck_plays or session_plays,
                            key=lambda p: (p.start_time, p.session_id), default=None)
+        session_activity = []
+        for session in sessions:
+            session_plays_for_stats = grouped.get(session["id"], [])
+            transition_total = sum(
+                1 for first, second in zip(session_plays_for_stats, session_plays_for_stats[1:])
+                if first.path.casefold() != second.path.casefold())
+            session_timestamp = session["end_time"]
+            if session_timestamp in (None, -1, 0):
+                session_timestamp = session["start_time"]
+            try:
+                date_label = datetime.fromtimestamp(int(session_timestamp)).strftime("%d/%m")
+            except (TypeError, ValueError, OSError, OverflowError):
+                date_label = f"Set {len(session_activity) + 1}"
+            genres = Counter(play.genre.strip() for play in session_plays_for_stats if play.genre.strip())
+            bpms = [play.bpm for play in session_plays_for_stats if play.bpm]
+            session_activity.append({
+                "label": date_label,
+                "tracks": len(session_plays_for_stats),
+                "transitions": transition_total,
+                "genres": dict(genres),
+                "average_bpm": round(sum(bpms) / len(bpms), 1) if bpms else None,
+            })
+
         snapshot = HistorySnapshot(plays, dict(transitions), current_play, session_plays,
-                                   active_session, signature, timestamp)
+                                   active_session, signature, timestamp,
+                                   len(sessions), sum(1 for play in plays if play.played),
+                                   session_activity)
         self._snapshot = snapshot
         self._data_version = conn.execute("PRAGMA data_version").fetchone()[0]
         return snapshot

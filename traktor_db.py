@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
+from datetime import datetime
 from pathlib import Path
 
 from serato_db import HistoryPlay, HistorySnapshot
@@ -66,6 +67,7 @@ def _collection_index(collection_file: Path) -> tuple[dict[str, dict], list[dict
             "path": path,
             "title": entry.get("TITLE") or Path(path).stem,
             "artist": entry.get("ARTIST", ""),
+            "genre": entry.get("GENRE", ""),
             "bpm": _float(tempo.get("BPM")) if tempo is not None else None,
             "key": _camelot_key(info.get("KEY")) if info is not None else None,
         }
@@ -159,19 +161,32 @@ class TraktorLibrary:
             for position, key in enumerate(keys):
                 track = _lookup_track(key, index) or {
                     "path": key, "title": Path(key.replace("\\", "/")).stem,
-                    "artist": "", "bpm": None, "key": None,
+                    "artist": "", "genre": "", "bpm": None, "key": None,
                 }
                 session.append(HistoryPlay(session_id, track["path"], track["title"],
                                            track["artist"], track["bpm"], track["key"],
-                                           position, position + 1, True))
+                                           position, position + 1, True, track["genre"]))
             if session:
                 sessions.append((file, session))
 
         transitions: dict[str, Counter] = defaultdict(Counter)
-        for _, session in sessions:
+        session_activity = []
+        for session_file, session in sessions:
+            transition_total = 0
             for previous, following in zip(session, session[1:]):
                 if previous.path.casefold() != following.path.casefold():
                     transitions[previous.path.casefold()][following.path.casefold()] += 1
+                    transition_total += 1
+            try:
+                date_label = datetime.fromtimestamp(session_file.stat().st_mtime).strftime("%d/%m")
+            except (OSError, OverflowError, ValueError):
+                date_label = f"Set {len(session_activity) + 1}"
+            genres = Counter(play.genre.strip() for play in session if play.genre.strip())
+            bpms = [play.bpm for play in session if play.bpm]
+            session_activity.append({"label": date_label, "tracks": len(session),
+                                     "transitions": transition_total,
+                                     "genres": dict(genres),
+                                     "average_bpm": round(sum(bpms) / len(bpms), 1) if bpms else None})
 
         all_plays = []
         seen_paths = set()
@@ -181,7 +196,7 @@ class TraktorLibrary:
             if key not in seen_paths:
                 all_plays.append(HistoryPlay(session_id, track["path"], track["title"],
                                              track["artist"], track["bpm"], track["key"],
-                                             0, 0, False))
+                                             0, 0, False, track["genre"]))
                 seen_paths.add(key)
         for _, session in sessions:
             for play in session:
@@ -193,6 +208,8 @@ class TraktorLibrary:
         timestamp = int(latest_file.stat().st_mtime) if latest_file else None
         current_play = latest_plays[-1] if latest_plays else None
         snapshot = HistorySnapshot(all_plays, dict(transitions), current_play,
-                                   latest_plays, False, signature, timestamp)
+                                   latest_plays, False, signature, timestamp,
+                                   len(sessions), sum(len(session) for _, session in sessions),
+                                   session_activity)
         self._snapshot, self._signature = snapshot, signature
         return snapshot

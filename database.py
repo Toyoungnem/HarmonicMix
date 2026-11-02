@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 from parser import parse_session
@@ -73,3 +74,49 @@ class HistoryDatabase:
                 ORDER BY count DESC
             """, (source_path,)).fetchall()
 
+    def transition_statistics(self):
+        with self.connect() as db:
+            sessions = db.execute("SELECT COUNT(DISTINCT session) FROM plays").fetchone()[0]
+            tracks = db.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
+            rows = db.execute("""
+                SELECT a.path AS source_path, COALESCE(a.title, '') AS source_title,
+                       b.path AS target_path, COALESCE(b.title, '') AS target_title,
+                       COUNT(*) AS count
+                FROM plays a JOIN plays b
+                  ON a.session=b.session AND b.position=a.position+1
+                WHERE lower(a.path)<>lower(b.path)
+                GROUP BY lower(a.path), lower(b.path)
+                ORDER BY count DESC, source_title, target_title
+            """).fetchall()
+            session_rows = db.execute("""
+                SELECT session, COUNT(*) AS tracks FROM plays
+                GROUP BY session ORDER BY session
+            """).fetchall()
+            transition_rows = db.execute("""
+                SELECT a.session, COUNT(*) AS transitions
+                FROM plays a JOIN plays b
+                  ON a.session=b.session AND b.position=a.position+1
+                WHERE lower(a.path)<>lower(b.path)
+                GROUP BY a.session
+            """).fetchall()
+        transition_by_session = {row["session"]: int(row["transitions"])
+                                 for row in transition_rows}
+        session_activity = []
+        for row in session_rows:
+            session = row["session"]
+            session_path = Path(session)
+            try:
+                label = datetime.fromtimestamp(session_path.stat().st_mtime).strftime("%d/%m")
+            except (OSError, OverflowError, ValueError):
+                label = session_path.stem[:12] or f"Set {len(session_activity) + 1}"
+            session_activity.append({
+                "label": label,
+                "tracks": int(row["tracks"]),
+                "transitions": transition_by_session.get(session, 0),
+            })
+        return {
+            "sessions": int(sessions),
+            "tracks": int(tracks),
+            "transitions": [dict(row) for row in rows],
+            "session_activity": session_activity,
+        }

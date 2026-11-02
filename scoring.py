@@ -104,12 +104,13 @@ class Suggestion:
 
 
 def rank_candidates(current_path, current_meta: AudioMetadata, candidates, metadata_by_path,
-                    played_paths, limit=5):
+                    played_paths, limit=5, recent_paths=None, bpm_momentum=0):
     """candidates: iterable de tuples (path, title, artist, transition_count)."""
     candidates = list(candidates)
     max_count = max((int(c[3]) for c in candidates), default=0)
     ranked = []
     played = {p.casefold() for p in played_paths}
+    recent = {p.casefold() for p in (recent_paths or [])}
     for path, title, artist, count in candidates:
         if path.casefold() == current_path.casefold():
             continue
@@ -132,14 +133,32 @@ def rank_candidates(current_path, current_meta: AudioMetadata, candidates, metad
             if key is None or key < 0.88 or bpm is None or bpm < 0.80:
                 continue
             category = "blue"
-        # Harmonie et tempo sont prioritaires; le vécu des sets affine le classement.
-        features = [(weight, value) for weight, value in (
-            (0.50, key), (0.35, bpm), (0.15, history)
-        ) if value is not None]
+        # Les transitions observées gardent le poids principal; le tempo et la clé
+        # départagent les habitudes. En fallback, seule la compatibilité musicale compte.
+        if count:
+            features = [(weight, value) for weight, value in (
+                (0.60, history), (0.20, bpm), (0.20, key)
+            ) if value is not None]
+        else:
+            features = [(weight, value) for weight, value in (
+                (0.55, key), (0.45, bpm)
+            ) if value is not None]
         total_weight = sum(weight for weight, _ in features)
         score = 100 * sum(weight * value for weight, value in features) / total_weight if total_weight else 0.0
+
+        momentum_adjustment = 0.0
+        if bpm_momentum and current_meta.bpm and meta.bpm and bpm_ratio == 1.0:
+            directed_delta = (meta.bpm - current_meta.bpm) * bpm_momentum
+            if 0 < directed_delta <= 8:
+                momentum_adjustment = 3.0
+            elif directed_delta < -5:
+                momentum_adjustment = -3.0
+        score += momentum_adjustment
+
         if path.casefold() in played:
-            score *= 0.72
+            score *= 0.82
+        if path.casefold() in recent:
+            score *= 0.68
         notes = []
         if count:
             notes.append(f"enchaînée {count} fois")
@@ -148,7 +167,20 @@ def rank_candidates(current_path, current_meta: AudioMetadata, candidates, metad
         if key is not None:
             notes.append(relation or "tonalité comparée")
         if path.casefold() in played:
-            notes.append("déjà jouée dans cette session")
+            notes.append("déjà jouée dans cette session · pénalité de répétition")
+        if path.casefold() in recent:
+            notes.append("jouée récemment · pénalité renforcée")
+        components = []
+        if count and history is not None:
+            components.append(f"habitude {history * 100:.0f}%")
+        if key is not None:
+            components.append(f"tonalité {key * 100:.0f}%")
+        if bpm is not None:
+            components.append(f"tempo {bpm * 100:.0f}%")
+        if components:
+            notes.append("score détaillé : " + " · ".join(components))
+        if momentum_adjustment:
+            notes.append("suit la montée du tempo" if bpm_momentum > 0 else "suit la baisse du tempo")
         if not count:
             notes.append("jamais enchaînée · bonne compatibilité BPM et tonalité")
         ranked.append(Suggestion(path, title or path.rsplit("\\", 1)[-1], artist or "", score,
