@@ -97,7 +97,7 @@ class SuggestionUI:
         hero_body = ctk.CTkFrame(hero, fg_color="transparent", corner_radius=0)
         hero_body.pack(side="left", fill="both", expand=True, padx=17, pady=19)
         username = self.profile_name
-        ctk.CTkLabel(hero_body, text="BIENVENUE", text_color=c["mint"],
+        ctk.CTkLabel(hero_body, text="BONJOUR", text_color=c["mint"],
                      font=(FONT_BOLD, 10), anchor="w").pack(anchor="w", pady=(3, 5))
         self.home_username_label = ctk.CTkLabel(hero_body, text=username, text_color=c["text"],
                      font=(FONT_BOLD, 27), anchor="w")
@@ -138,15 +138,15 @@ class SuggestionUI:
             border_width=1, border_color=c["border"])
         self.home_status_card.pack(fill="x", pady=(0, 15))
         self.home_status_label = ctk.CTkLabel(
-            self.home_status_card, text="HISTORIQUE",
+            self.home_status_card, text="DERNIÈRE SESSION",
             text_color=c["violet"], font=(FONT_BOLD, 10), anchor="w")
         self.home_status_label.pack(anchor="w", padx=16, pady=(15, 6))
         self.home_track_label = ctk.CTkLabel(
-            self.home_status_card, text="Connexion à Serato…", text_color=c["text"],
+            self.home_status_card, text="Aucune session détectée", text_color=c["text"],
             font=(FONT_BOLD, 16), anchor="w", justify="left", wraplength=370)
         self.home_track_label.pack(fill="x", padx=16)
         self.home_detail_label = ctk.CTkLabel(
-            self.home_status_card, text="Lecture de l'historique local",
+            self.home_status_card, text="Choisis Serato DJ ou Traktor ci-dessus",
             text_color=c["muted"], font=(FONT, 10), anchor="w", justify="left",
             wraplength=370)
         self.home_detail_label.pack(fill="x", padx=16, pady=(4, 15))
@@ -376,13 +376,14 @@ class SuggestionUI:
         if self.selected_suggestion is not None:
             self.search_button.configure(state="normal")
 
-    def render(self, title, detail, status, status_color, suggestions):
+    def render(self, title, detail, status, status_color, suggestions,
+               session_date="", session_detail=""):
         is_playing = "EN DIRECT" in status or status == "● SERATO"
         self.current_label.configure(text=title)
         self.detail_label.configure(text=detail)
-        self.home_track_label.configure(text=title)
-        self.home_detail_label.configure(text=detail or "Session Serato prête")
-        self.home_status_label.configure(text=status, text_color=status_color)
+        self.home_track_label.configure(text=session_date or "Aucune session détectée")
+        self.home_detail_label.configure(text=session_detail or "Choisis Serato DJ ou Traktor ci-dessus")
+        self.home_status_label.configure(text="DERNIÈRE SESSION", text_color=status_color)
         self.current_section_label.configure(
             text="EN COURS" if is_playing else "DERNIÈRE PISTE",
             text_color=COLORS["mint"] if is_playing else COLORS["muted"])

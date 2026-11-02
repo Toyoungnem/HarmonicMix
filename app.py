@@ -98,6 +98,7 @@ class SuggestionApp:
 
     def select_software(self, software):
         if software == self.software:
+            self.ui.show_dashboard()
             return
         self.software = software
         self.profiles.set_software(software)
@@ -107,6 +108,18 @@ class SuggestionApp:
         self.native_snapshot = None
         self.last_native_signature = None
         self.refresh(schedule=False)
+        self.ui.show_dashboard()
+
+    def _last_session_date(self):
+        timestamp = None
+        if self.native_snapshot is not None:
+            timestamp = self.native_snapshot.last_session_timestamp
+        if timestamp is None and self.current_session and self.current_session.is_file():
+            try:
+                timestamp = int(self.current_session.stat().st_mtime)
+            except OSError:
+                pass
+        return datetime.fromtimestamp(timestamp).strftime("%d/%m/%Y") if timestamp else ""
 
     def _latest_session(self):
         files = list(DEFAULT_SESSIONS_DIR.glob("*.session"))
@@ -298,6 +311,9 @@ class SuggestionApp:
             play.title or Path(play.path).name,
             "  ·  ".join(details) or ("Historique Traktor" if self.using_traktor else "Session Serato active"),
             status, status_color, suggestions,
+            session_date=self._last_session_date(),
+            session_detail=("Traktor · session archivée" if self.using_traktor
+                            else "Serato DJ · historique local"),
         )
 
     def _metadata(self, path):
