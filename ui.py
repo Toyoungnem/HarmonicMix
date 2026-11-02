@@ -23,16 +23,22 @@ ctk.set_appearance_mode("dark")
 class SuggestionUI:
     """Présente l'état courant et les suggestions; ne lit aucune donnée Serato."""
 
-    def __init__(self, root: ctk.CTk, on_refresh, on_close, on_search):
+    def __init__(self, root: ctk.CTk, on_refresh, on_close, on_search,
+                 on_profile_select, on_software_select, profile_name="Nel",
+                 software="serato"):
         self.root = root
         self.on_refresh = on_refresh
         self.on_close = on_close
         self.on_search = on_search
+        self.on_profile_select = on_profile_select
+        self.on_software_select = on_software_select
+        self.profile_name = profile_name
+        self.software = software
         self.topmost = True
         self._selected = None
         self.selected_suggestion = None
         self._cards = []
-        self.root.title("Serato · Harmonic Mix")
+        self.root.title("Harmonic Mix")
         self.root.configure(fg_color=COLORS["background"])
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", 0.96)
@@ -40,6 +46,7 @@ class SuggestionUI:
         self.root.minsize(420, 600)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self._build()
+        self.set_software(self.software)
         self._place_near_serato()
 
     def _build(self):
@@ -70,14 +77,17 @@ class SuggestionUI:
         brand.pack(side="left", padx=11, fill="y")
         ctk.CTkLabel(brand, text="HARMONIC MIX", text_color=c["text"],
                      font=(FONT_BOLD, 13), anchor="w").pack(anchor="w", pady=(3, 0))
-        ctk.CTkLabel(brand, text="SERATO DJ LITE · COMPAGNON DE MIX",
-                     text_color=c["muted"], font=(FONT, 8), anchor="w").pack(anchor="w")
-        self.home_pin_button = ctk.CTkButton(
-            top, text="●  ÉPINGLÉ", command=self.toggle_topmost, width=105,
-            height=32, corner_radius=16, fg_color=c["surface_2"],
-            hover_color=c["surface_hover"], text_color=c["mint"],
-            font=(FONT_BOLD, 9), border_width=1, border_color=c["mint"])
-        self.home_pin_button.pack(side="right", anchor="n")
+        self.home_software_caption = ctk.CTkLabel(
+            brand, text="COMPAGNON DE MIX", text_color=c["muted"],
+            font=(FONT, 8), anchor="w")
+        self.home_software_caption.pack(anchor="w")
+        self.home_profile_button = ctk.CTkButton(
+            top, text=f"PROFIL · {self.profile_name.upper()}",
+            command=self.on_profile_select, width=112, height=32,
+            corner_radius=16, fg_color=c["surface_2"],
+            hover_color=c["surface_hover"], text_color=c["violet"],
+            font=(FONT_BOLD, 9), border_width=1, border_color=c["border"])
+        self.home_profile_button.pack(side="right", anchor="n")
 
         hero = ctk.CTkFrame(shell, fg_color=c["surface"], corner_radius=22,
                             border_width=1, border_color=c["border"])
@@ -86,17 +96,42 @@ class SuggestionUI:
         accent.pack(side="left", fill="y", padx=(14, 0), pady=18)
         hero_body = ctk.CTkFrame(hero, fg_color="transparent", corner_radius=0)
         hero_body.pack(side="left", fill="both", expand=True, padx=17, pady=19)
-        username = "Nel"
+        username = self.profile_name
         ctk.CTkLabel(hero_body, text="BIENVENUE", text_color=c["mint"],
                      font=(FONT_BOLD, 10), anchor="w").pack(anchor="w", pady=(3, 5))
-        ctk.CTkLabel(hero_body, text=username, text_color=c["text"],
-                     font=(FONT_BOLD, 27), anchor="w").pack(anchor="w")
+        self.home_username_label = ctk.CTkLabel(hero_body, text=username, text_color=c["text"],
+                     font=(FONT_BOLD, 27), anchor="w")
+        self.home_username_label.pack(anchor="w")
         ctk.CTkLabel(hero_body, text="HARMONIC MIX", text_color=c["violet"],
                      font=(FONT_BOLD, 12), anchor="w").pack(anchor="w", pady=(9, 0))
         ctk.CTkLabel(
             hero_body, text="Ton compagnon de mix pour trouver le morceau qui s'enchaîne naturellement.",
             text_color=c["muted"], font=(FONT, 11), justify="left", anchor="w",
             wraplength=345).pack(fill="x", pady=(7, 6))
+
+        software_card = ctk.CTkFrame(
+            shell, fg_color=c["surface"], corner_radius=15,
+            border_width=1, border_color=c["border"])
+        software_card.pack(fill="x", pady=(0, 14))
+        ctk.CTkLabel(software_card, text="CHOISIS TON LOGICIEL DJ",
+                     text_color=c["muted"], font=(FONT_BOLD, 9), anchor="w").pack(
+                         anchor="w", padx=13, pady=(10, 6))
+        software_row = ctk.CTkFrame(software_card, fg_color="transparent", corner_radius=0)
+        software_row.pack(fill="x", padx=9, pady=(0, 9))
+        self.software_buttons = {}
+        for software_id, label, accent_color in (
+            ("serato", "SERATO DJ", c["mint"]),
+            ("traktor", "TRAKTOR", c["violet"]),
+        ):
+            button = ctk.CTkButton(
+                software_row, text=label,
+                command=lambda selected=software_id: self.on_software_select(selected),
+                height=36, corner_radius=11, fg_color=c["surface_2"],
+                hover_color=c["surface_hover"], text_color=accent_color,
+                font=(FONT_BOLD, 10), border_width=1, border_color=c["border"])
+            button.pack(side="left", fill="x", expand=True, padx=4)
+            self.software_buttons[software_id] = button
+        self._update_software_buttons()
 
         self.home_status_card = ctk.CTkFrame(
             shell, fg_color=c["surface_2"], corner_radius=17,
@@ -278,7 +313,7 @@ class SuggestionUI:
         self.topmost = bool(enabled)
         self.root.attributes("-topmost", self.topmost)
         c = COLORS
-        for button in (self.pin_button, self.home_pin_button):
+        for button in (self.pin_button,):
             button.configure(
                 text="●  ÉPINGLÉ" if self.topmost else "○  LIBRE",
                 fg_color=c["surface_2"],
@@ -294,6 +329,36 @@ class SuggestionUI:
         self._set_page_geometry(470, 850)
         self.dashboard_page.tkraise()
 
+    def set_profile(self, name):
+        self.profile_name = name
+        self.home_profile_button.configure(text=f"PROFIL · {name.upper()}")
+        self.home_username_label.configure(text=name)
+        self.home_track_label.configure(text=f"En attente de {self._software_name()}")
+
+    def _software_name(self):
+        return "Serato DJ" if self.software == "serato" else "Traktor"
+
+    def set_software(self, software):
+        self.software = software if software in {"serato", "traktor"} else "serato"
+        self._update_software_buttons()
+        label = self._software_name()
+        self.root.title(f"{label} · Harmonic Mix")
+        self.home_software_caption.configure(text=f"{label.upper()} · COMPAGNON DE MIX")
+        self.current_label.configure(text=f"En attente de {label}")
+        self.home_track_label.configure(text=f"En attente de {label}")
+        self.search_button.configure(text=f"⌕  CHERCHER DANS {label.upper()}")
+        self.load_hint.configure(text=f"Sélectionne un morceau pour le rechercher dans {label}")
+
+    def _update_software_buttons(self):
+        c = COLORS
+        for software_id, button in self.software_buttons.items():
+            selected = software_id == self.software
+            accent = c["mint"] if software_id == "serato" else c["violet"]
+            button.configure(
+                fg_color=c["surface_2"] if selected else c["surface"],
+                text_color=accent if selected else c["muted"],
+                border_color=accent if selected else c["border"])
+
     def show_error(self, message):
         self.status_label.configure(text="● ERREUR", text_color=COLORS["gold"])
         self.reason_label.configure(text=message)
@@ -301,7 +366,7 @@ class SuggestionUI:
     def _search_selected(self):
         if self.selected_suggestion is not None:
             self.search_button.configure(state="disabled")
-            self.load_hint.configure(text="Recherche progressive dans Serato…",
+            self.load_hint.configure(text=f"Recherche progressive dans {self._software_name()}…",
                                      text_color=COLORS["violet"])
             self.on_search(self.selected_suggestion)
 

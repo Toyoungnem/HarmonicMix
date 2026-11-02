@@ -7,6 +7,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 import sys
+import xml.etree.ElementTree as ET
+from shutil import copy2
+from tkinter import simpledialog
 
 from database import HistoryDatabase
 from live import latest_logged_track
@@ -15,15 +18,16 @@ from parser import DEFAULT_SESSIONS_DIR, TrackPlay, parse_session
 from serato_db import HistoryPlay, SeratoLibrary
 from scoring import camelot_number, rank_candidates
 from serato_control import search_track_in_serato
+from traktor_control import search_track_in_traktor
+from profiles import LocalProfiles
+from traktor_db import TraktorLibrary, find_traktor_roots
 import customtkinter as ctk
 
 from ui import COLORS, SuggestionUI
 
-if getattr(sys, "frozen", False):
-    APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "HarmonicMix"
-else:
-    APP_DIR = Path(__file__).resolve().parent
-DB = HistoryDatabase(APP_DIR / "suggestions.sqlite3")
+APP_DIR = Path(__file__).resolve().parent
+LOCAL_DATA_DIR = Path(os.environ.get(
+    "LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "HarmonicMix"
 
 
 class SuggestionApp:
@@ -31,14 +35,20 @@ class SuggestionApp:
 
     def __init__(self, root):
         self.root = root
+        self.profiles = LocalProfiles(LOCAL_DATA_DIR)
+        self.profile = self.profiles.current
+        self.db = self._profile_database(self.profile)
+        self.software = self.profile.get("software", "serato")
         self.meta_cache: dict[str, AudioMetadata] = {}
         self.native_library = SeratoLibrary()
+        self.traktor_library = TraktorLibrary()
         self.native_snapshot = None
         self.history_plays = []
         self.legacy_transition_counts = {}
         self.native_metadata = {}
         self.last_native_signature = None
         self.using_serato_database = False
+        self.using_traktor = False
         self.current_session: Path | None = None
         self.current_play = None
         self.session_plays = []
@@ -48,8 +58,55 @@ class SuggestionApp:
             on_refresh=lambda: self.refresh(schedule=False),
             on_close=self.close,
             on_search=self.search_suggestion,
+            on_profile_select=self.change_profile,
+            on_software_select=self.select_software,
+            profile_name=self.profile["name"],
+            software=self.software,
         )
         self.refresh()
+
+    def _profile_database(self, profile):
+        if profile["id"] == "nel":
+            path = LOCAL_DATA_DIR / "suggestions.sqlite3"
+            legacy = APP_DIR / "suggestions.sqlite3"
+            if not path.exists() and legacy.is_file() and legacy.resolve() != path.resolve():
+                try:
+                    copy2(legacy, path)
+                except OSError:
+                    pass
+        else:
+            path = LOCAL_DATA_DIR / "profiles" / profile["id"] / "suggestions.sqlite3"
+        return HistoryDatabase(path)
+
+    def change_profile(self):
+        existing = ", ".join(self.profiles.names)
+        name = simpledialog.askstring(
+            "Profil local", f"Entre un profil existant ou un nouveau nom.\nProfils : {existing}",
+            parent=self.root)
+        if not name or not name.strip():
+            return
+        self.profile = self.profiles.activate_or_create(name)
+        self.db = self._profile_database(self.profile)
+        self.software = self.profile.get("software", "serato")
+        self.meta_cache.clear()
+        self.current_play = None
+        self.native_snapshot = None
+        self.last_native_signature = None
+        self.ui.set_profile(self.profile["name"])
+        self.ui.set_software(self.software)
+        self.refresh(schedule=False)
+
+    def select_software(self, software):
+        if software == self.software:
+            return
+        self.software = software
+        self.profiles.set_software(software)
+        self.profile = self.profiles.current
+        self.ui.set_software(software)
+        self.current_play = None
+        self.native_snapshot = None
+        self.last_native_signature = None
+        self.refresh(schedule=False)
 
     def _latest_session(self):
         files = list(DEFAULT_SESSIONS_DIR.glob("*.session"))
@@ -66,30 +123,64 @@ class SuggestionApp:
 
     def refresh(self, schedule=True):
         try:
-            snapshot = self.native_library.load(force=not schedule)
-            if snapshot and snapshot.plays:
-                self.using_serato_database = True
-                changed = snapshot.signature != self.last_native_signature
-                if changed or self.current_play is None:
-                    self.native_snapshot = snapshot
-                    self.history_plays = snapshot.plays
-                    self.session_plays = snapshot.current_session_plays
-                    self.current_play = snapshot.current_play or max(
-                        snapshot.plays, key=lambda p: p.start_time, default=None)
-                    self.native_metadata = {
-                        play.path.casefold(): AudioMetadata(play.bpm, play.key)
-                        for play in snapshot.plays
-                    }
-                    self.legacy_transition_counts = {}
-                    self.last_native_signature = snapshot.signature
-                    self._update_display()
-            else:
+            if self.software == "traktor":
+                snapshot = self.traktor_library.load(force=not schedule)
                 self.using_serato_database = False
-                changed, newest = DB.refresh(DEFAULT_SESSIONS_DIR)
-                if changed or self.current_play is None:
-                    self._load_session_fallback(newest)
-                    self._update_display()
-        except (OSError, ValueError) as exc:
+                self.using_traktor = True
+                if snapshot and snapshot.plays and snapshot.current_play:
+                    changed = snapshot.signature != self.last_native_signature
+                    if changed or self.current_play is None:
+                        self.native_snapshot = snapshot
+                        self.history_plays = snapshot.plays
+                        self.session_plays = snapshot.current_session_plays
+                        self.current_play = snapshot.current_play
+                        self.native_metadata = {
+                            play.path.casefold(): AudioMetadata(play.bpm, play.key)
+                            for play in snapshot.plays
+                        }
+                        self.legacy_transition_counts = {}
+                        self.last_native_signature = snapshot.signature
+                        self._update_display()
+                else:
+                    self.native_snapshot = snapshot
+                    self.current_play = None
+                    self.history_plays = []
+                    self.session_plays = []
+                    self.native_metadata = {}
+                    roots = find_traktor_roots()
+                    location = str(roots[0]) if roots else (
+                        str(Path.home() / "Documents" / "Native Instruments" / "Traktor*"))
+                    self.ui.render(
+                        "Aucune session Traktor archivée", location,
+                        "HISTORIQUE TRAKTOR INTROUVABLE", COLORS["gold"], [],
+                    )
+            else:
+                self.using_traktor = False
+                self.traktor_library = TraktorLibrary()
+                snapshot = self.native_library.load(force=not schedule)
+                if snapshot and snapshot.plays:
+                    self.using_serato_database = True
+                    changed = snapshot.signature != self.last_native_signature
+                    if changed or self.current_play is None:
+                        self.native_snapshot = snapshot
+                        self.history_plays = snapshot.plays
+                        self.session_plays = snapshot.current_session_plays
+                        self.current_play = snapshot.current_play or max(
+                            snapshot.plays, key=lambda p: p.start_time, default=None)
+                        self.native_metadata = {
+                            play.path.casefold(): AudioMetadata(play.bpm, play.key)
+                            for play in snapshot.plays
+                        }
+                        self.legacy_transition_counts = {}
+                        self.last_native_signature = snapshot.signature
+                        self._update_display()
+                else:
+                    self.using_serato_database = False
+                    changed, newest = self.db.refresh(DEFAULT_SESSIONS_DIR)
+                    if changed or self.current_play is None:
+                        self._load_session_fallback(newest)
+                        self._update_display()
+        except (OSError, ValueError, ET.ParseError) as exc:
             self.ui.show_error(f"Lecture impossible : {exc}")
         if schedule:
             self.root.after(5000, self.refresh)
@@ -102,7 +193,7 @@ class SuggestionApp:
         self.live_log_time = logged[1] if logged else None
         if logged:
             path = logged[0]
-            row = next((r for r in DB.all_plays()
+            row = next((r for r in self.db.all_plays()
                         if r["path"].casefold() == path.casefold()), None)
             self.current_play = TrackPlay(
                 path, (row["title"] if row else None) or Path(path).stem,
@@ -112,7 +203,7 @@ class SuggestionApp:
         self.history_plays = [HistoryPlay(
             0, row["path"], row["title"] or Path(row["path"]).stem,
             row["artist"] or "", None, None, 0, 0, True)
-            for row in DB.all_plays()]
+            for row in self.db.all_plays()]
         self.session_plays = [HistoryPlay(
             0, play.path, play.title or Path(play.path).stem, play.artist or "",
             None, None, 0, 0, True) for play in parsed]
@@ -120,16 +211,20 @@ class SuggestionApp:
         if self.current_play:
             self.legacy_transition_counts = {
                 row[0].casefold(): int(row[3])
-                for row in DB.transition_counts(self.current_play.path)
+                for row in self.db.transition_counts(self.current_play.path)
             }
         self.native_metadata = {}
 
     def _update_display(self):
         play = self.current_play
         if not play:
+            name = "Traktor" if self.using_traktor else "Serato"
             self.ui.render(
-                "En attente de Serato", str(DEFAULT_SESSIONS_DIR),
-                "HISTORIQUE", COLORS["gold"], [],
+                f"En attente de {name}",
+                ("Ferme Traktor pour enregistrer une session dans History." if self.using_traktor
+                 else str(DEFAULT_SESSIONS_DIR)),
+                "HISTORIQUE TRAKTOR INTROUVABLE" if self.using_traktor else "HISTORIQUE",
+                COLORS["gold"], [],
             )
             return
 
@@ -147,7 +242,12 @@ class SuggestionApp:
             details.append(key_label)
 
         serato_open = self._serato_is_running()
-        if self.using_serato_database and self.native_snapshot.active_session and serato_open:
+        if self.using_traktor:
+            timestamp = self.native_snapshot.last_session_timestamp if self.native_snapshot else None
+            date_text = datetime.fromtimestamp(timestamp).strftime("%d/%m/%Y") if timestamp else ""
+            status = f"SESSION TRAKTOR · {date_text}" if date_text else "HISTORIQUE TRAKTOR"
+            status_color = COLORS["violet"]
+        elif self.using_serato_database and self.native_snapshot.active_session and serato_open:
             status, status_color = "● EN DIRECT", COLORS["mint"]
         elif serato_open and self.live_log_time and time.time() - self.live_log_time < 120:
             status, status_color = "● SERATO", COLORS["mint"]
@@ -168,7 +268,7 @@ class SuggestionApp:
         else:
             status, status_color = "HISTORIQUE", COLORS["gold"]
 
-        if self.using_serato_database:
+        if self.using_serato_database or self.using_traktor:
             counts = self.native_snapshot.transitions.get(play.path.casefold(), {})
         else:
             counts = self.legacy_transition_counts
@@ -196,7 +296,7 @@ class SuggestionApp:
 
         self.ui.render(
             play.title or Path(play.path).name,
-            "  ·  ".join(details) or "Session Serato active",
+            "  ·  ".join(details) or ("Historique Traktor" if self.using_traktor else "Session Serato active"),
             status, status_color, suggestions,
         )
 
@@ -211,11 +311,14 @@ class SuggestionApp:
     def search_suggestion(self, suggestion):
         self.ui.show_search_result(f"Recherche en cours : {suggestion.title}…")
         try:
-            search_track_in_serato(
-                self.root, suggestion.path, suggestion.title,
-                suggestion.artist,
-                on_complete=lambda error: self._search_finished(suggestion, error),
-            )
+            complete = lambda error: self._search_finished(suggestion, error)
+            if self.software == "traktor":
+                search_track_in_traktor(self.root, suggestion.title, suggestion.artist, complete)
+            else:
+                search_track_in_serato(
+                    self.root, suggestion.path, suggestion.title,
+                    suggestion.artist, on_complete=complete,
+                )
         except (OSError, RuntimeError, ValueError) as exc:
             self.ui.show_search_result(str(exc), success=False)
 
@@ -223,8 +326,9 @@ class SuggestionApp:
         if error:
             self.ui.show_search_result(error, success=False)
         else:
+            software_name = "Traktor" if self.software == "traktor" else "Serato"
             self.ui.show_search_result(
-                f"Trouvé dans Serato : {suggestion.title}. Choisis ensuite le deck."
+                f"Recherche envoyée dans {software_name} : {suggestion.title}. Vérifie le résultat puis choisis le deck."
             )
 
     @staticmethod
