@@ -385,7 +385,7 @@ class SuggestionUI:
         self.home_detail_label.configure(text=session_detail or "Choisis Serato DJ ou Traktor ci-dessus")
         self.home_status_label.configure(text="DERNIÈRE SESSION", text_color=status_color)
         self.current_section_label.configure(
-            text="EN COURS" if is_playing else "DERNIÈRE PISTE",
+            text="EN COURS" if is_playing else "DERNIÈRE SESSION",
             text_color=COLORS["mint"] if is_playing else COLORS["muted"])
         self.status_label.configure(text=status, text_color=status_color)
         self._render_cards(suggestions)

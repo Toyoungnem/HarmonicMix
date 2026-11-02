@@ -98,7 +98,6 @@ class SuggestionApp:
 
     def select_software(self, software):
         if software == self.software:
-            self.ui.show_dashboard()
             return
         self.software = software
         self.profiles.set_software(software)
@@ -108,7 +107,6 @@ class SuggestionApp:
         self.native_snapshot = None
         self.last_native_signature = None
         self.refresh(schedule=False)
-        self.ui.show_dashboard()
 
     def _last_session_date(self):
         timestamp = None
@@ -255,6 +253,7 @@ class SuggestionApp:
             details.append(key_label)
 
         serato_open = self._serato_is_running()
+        serato_session_open = False
         if self.using_traktor:
             timestamp = self.native_snapshot.last_session_timestamp if self.native_snapshot else None
             date_text = datetime.fromtimestamp(timestamp).strftime("%d/%m/%Y") if timestamp else ""
@@ -262,8 +261,10 @@ class SuggestionApp:
             status_color = COLORS["violet"]
         elif self.using_serato_database and self.native_snapshot.active_session and serato_open:
             status, status_color = "● EN DIRECT", COLORS["mint"]
+            serato_session_open = True
         elif serato_open and self.live_log_time and time.time() - self.live_log_time < 120:
             status, status_color = "● SERATO", COLORS["mint"]
+            serato_session_open = True
         elif self.history_plays:
             timestamp = (self.native_snapshot.last_session_timestamp
                          if self.using_serato_database and self.native_snapshot
@@ -307,9 +308,16 @@ class SuggestionApp:
         suggestions = rank_candidates(
             play.path, current_meta, candidates, metadata, played_paths)
 
+        display_title = play.title or Path(play.path).name
+        display_detail = "  ·  ".join(details) or (
+            "Historique Traktor" if self.using_traktor else "Session Serato active")
+        if not self.using_traktor and not serato_session_open:
+            display_title = self._last_session_date() or "Aucune session enregistrée"
+            display_detail = ""
+
         self.ui.render(
-            play.title or Path(play.path).name,
-            "  ·  ".join(details) or ("Historique Traktor" if self.using_traktor else "Session Serato active"),
+            display_title,
+            display_detail,
             status, status_color, suggestions,
             session_date=self._last_session_date(),
             session_detail=("Traktor · session archivée" if self.using_traktor
