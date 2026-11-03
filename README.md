@@ -30,7 +30,9 @@ Sous Windows, `build_exe.bat` génère une application autonome dans `dist/Harmo
 - Les pochettes embarquées dans les fichiers audio s'affichent pour le morceau courant, les suggestions et les transitions du Dashboard. Elles sont lues depuis le disque en arrière-plan ; aucune image n'est téléchargée.
 - L'écran d'accueil affiche la piste de référence et permet d'ouvrir le panneau de suggestions.
 - Les suggestions rouges, orange et jaunes s'appuient sur les transitions observées ; les bleues sont des propositions harmoniques sans transition connue.
+- Une liste de cinq suggestions réserve deux places aux morceaux jamais enchaînés mais compatibles, pour faire tourner la bibliothèque sans écarter les habitudes du set ; un même artiste n'occupe pas plus de deux places.
 - Sélectionne une suggestion puis **Chercher dans…** ou double-clique dessus (confirmation demandée) pour lancer la recherche dans le logiciel choisi. Vérifie le résultat puis charge-le manuellement sur le deck.
+- Le classement musical suit la roue Camelot (même tonalité, relative majeur/mineur, ±1, ±2, sous-dominante et dominante) et la tolérance demi/double tempo, avec une énergie estimée à partir du BPM. Un morceau sans tonalité ni BPM exploitables ne peut pas être proposé en bleu.
 - Les morceaux joués très récemment sont pénalisés pour limiter les répétitions. Une petite tendance de BPM sur les derniers morceaux aide à maintenir une montée ou une baisse progressive du set ; le logiciel n'analyse pas le signal audio.
 - Le panneau vérifie les changements d'historique toutes les cinq secondes et reste épinglé au premier plan par défaut.
 
@@ -48,8 +50,19 @@ Les profils sont de simples espaces de données locaux, sans mot de passe, chiff
 - `serato_db.py` lit la base Serato en lecture seule, normalement située dans `%LOCALAPPDATA%/Serato/Library/master.sqlite`.
 - `traktor_db.py` lit la collection et les sessions Traktor NML en lecture seule.
 - Les fichiers `.session` sont recherchés dans `%USERPROFILE%/Music/_Serato_/History/Sessions`.
-- `parser.py` lit les sessions Serato en repli ; `scoring.py` calcule la compatibilité ; `ui.py` contient l'interface ; `profiles.py` gère les profils locaux.
+- `parser.py` lit les sessions Serato en repli ; `scoring.py` calcule la compatibilité harmonique et rythmique (roue Camelot, tempo, énergie) ; `ui.py` contient l'interface ; `profiles.py` gère les profils locaux.
 - Les bases SQLite, les sessions et les fichiers générés (`build/`, `dist/`) sont ignorés par Git pour protéger les données locales.
+
+## Vérifier le classement
+
+```powershell
+python -m pytest
+python tools/calibration.py
+```
+
+`pytest` est installé par `requirements.txt` ; les tests sont aussi jouables sans lui avec `python -m unittest discover -s tests -v`.
+
+Les tests couvrent les règles harmoniques et le classement sans dépendre d'une bibliothèque. `tools/calibration.py` mesure le taux de réussite sur l'historique Serato réel (lecture seule) : 30 % des transitions sont masquées, puis on vérifie si le morceau qui suivait vraiment apparaît dans le top 1, 3 ou 5. Sur une bibliothèque de 5 200 transitions, le classement actuel place la bonne piste dans le top 5 dans ~42 % des cas (et le bon morceau en tête dans ~28 %), contre ~14 % pour l'ancienne pondération (`--legacy`).
 
 ## Dépendances
 

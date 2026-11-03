@@ -4,3 +4,5 @@ customtkinter==6.0.0
 mutagen>=1.47
 # Mise en cache et affichage des pochettes audio locales.
 Pillow>=10.0
+# Tests du classement musical (python -m pytest).
+pytest>=8.0

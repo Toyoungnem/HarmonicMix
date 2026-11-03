@@ -9,14 +9,16 @@ except ImportError:  # Les pochettes restent facultatives.
     MutagenFile = None
 
 
-def read_cover(path: str) -> bytes | None:
+def read_cover(path: str, fallback: str | None = None) -> bytes | None:
+    """Pochette du fichier ; si elle manque et qu'un `fallback` est fourni
+    (autre morceau, même album), on essaie ce fichier avant d'abandonner."""
     """Renvoie les données de la première pochette embarquée, sans accès réseau."""
     if MutagenFile is None or not path or not Path(path).is_file():
-        return None
+        return read_cover(fallback) if fallback and fallback != path else None
     try:
         audio = MutagenFile(path, easy=False)
         if audio is None:
-            return None
+            return read_cover(fallback) if fallback and fallback != path else None
 
         pictures = getattr(audio, "pictures", None)
         if pictures:
@@ -45,5 +47,6 @@ def read_cover(path: str) -> bytes | None:
             if values:
                 return bytes(values[0])
     except Exception:
-        return None
-    return None
+        return read_cover(fallback) if fallback and fallback != path else None
+    # Rien dans ce fichier : on tente le morceau voisin du même album.
+    return read_cover(fallback) if fallback and fallback != path else None

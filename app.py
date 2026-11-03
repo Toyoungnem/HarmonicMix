@@ -212,7 +212,9 @@ class SuggestionApp:
                         self.session_plays = snapshot.current_session_plays
                         self.current_play = snapshot.current_play
                         self.native_metadata = {
-                            play.path.casefold(): AudioMetadata(play.bpm, play.key)
+                            play.path.casefold(): AudioMetadata(play.bpm, play.key,
+                                                               play.genre or None,
+                                                               play.album or None)
                             for play in snapshot.plays
                         }
                         self.legacy_transition_counts = {}
@@ -245,7 +247,9 @@ class SuggestionApp:
                         self.current_play = snapshot.current_play or max(
                             snapshot.plays, key=lambda p: p.start_time, default=None)
                         self.native_metadata = {
-                            play.path.casefold(): AudioMetadata(play.bpm, play.key)
+                            play.path.casefold(): AudioMetadata(play.bpm, play.key,
+                                                               play.genre or None,
+                                                               play.album or None)
                             for play in snapshot.plays
                         }
                         self.legacy_transition_counts = {}
@@ -370,6 +374,19 @@ class SuggestionApp:
 
         candidates = list(unique.values())
         metadata = {path: self._metadata(path) for path, *_ in candidates}
+        # Pochette de secours : un autre morceau du même album.
+        self.cover_fallbacks = {}
+        by_album: dict[str, str] = {}
+        for track in self.history_plays:
+            album = (self._metadata(track.path).album or "").strip().casefold()
+            if not album:
+                continue
+            known = by_album.get(album)
+            if known and known.casefold() != track.path.casefold():
+                self.cover_fallbacks.setdefault(track.path.casefold(), known)
+                self.cover_fallbacks.setdefault(known.casefold(), track.path)
+            else:
+                by_album.setdefault(album, track.path)
         played_paths = {track.path for track in self.session_plays}
         recent_paths = [track.path for track in self.session_plays[-4:-1]]
         recent_bpms = [track.bpm for track in self.session_plays[-4:]
@@ -383,6 +400,8 @@ class SuggestionApp:
             play.path, current_meta, candidates, metadata, played_paths,
             recent_paths=recent_paths,
             bpm_momentum=bpm_momentum,
+            seed_paths=[track.path for track in reversed(self.session_plays[-6:])],
+            guarantee_discovery=True,
         )
 
         display_title = play.title or Path(play.path).name
@@ -417,7 +436,11 @@ class SuggestionApp:
         if key in self.cover_requests:
             return
         self.cover_requests.add(key)
-        future = self.cover_executor.submit(read_cover, str(path))
+        fallback = getattr(self, "cover_fallbacks", {}).get(key)
+        if fallback:
+            future = self.cover_executor.submit(read_cover, str(path), fallback)
+        else:
+            future = self.cover_executor.submit(read_cover, str(path))
 
         def complete(result):
             try:

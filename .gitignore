@@ -19,3 +19,8 @@ venv/
 .vscode/
 .env
 .env.*
+
+# Cache des tests et captures d'écran de prévisualisation
+.pytest_cache/
+.preview-ui/
+preview/
