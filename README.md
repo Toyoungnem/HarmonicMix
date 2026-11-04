@@ -4,6 +4,13 @@
 
 [⬇️ Télécharger Harmonic Mix pour Windows](https://github.com/Toyoungnem/HarmonicMix/releases/latest/download/HarmonicMix.exe) · [Voir la release](https://github.com/Toyoungnem/HarmonicMix/releases/latest)
 
+## Nouveautés de la version 2.1.0
+
+- Nouveau logo orange et bleu, avec fond extérieur transparent, utilisé dans l'application et dans l'exécutable Windows.
+- Interface et classement des suggestions améliorés depuis la version 2.0.0, avec une meilleure prise en compte des transitions, du BPM et de la tonalité.
+- Affichage des erreurs et de l'état de recherche simplifié dans le panneau de suggestions.
+- Bibliothèque Serato et lecture des métadonnées retravaillées pour une analyse plus fluide.
+
 Assistant local de suggestions de transitions pour Serato DJ Lite ou Traktor. Le classement combine les transitions observées dans les sets, le BPM et la tonalité Camelot. L'application ne capte pas le son et fonctionne hors ligne.
 
 ## Démarrer

@@ -37,7 +37,7 @@ COLORS = {
 FONT = "Segoe UI"
 FONT_BOLD = "Segoe UI Semibold"
 FONT_LIGHT = "Segoe UI Light"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 
 # Nom court de chaque palier, affiché sur la carte à côté du rang.
 TIER_LABELS = {
@@ -423,19 +423,8 @@ class SuggestionUI:
             font=(FONT_BOLD, 12), border_width=1, border_color=c["border"])
         self.search_button.pack(fill="x")
 
-        # Explication de la piste sélectionnée : un seul bloc, une ligne ou deux.
-        self.reason_box = ctk.CTkFrame(shell, fg_color=c["surface"], corner_radius=12,
-                                       border_width=1, border_color=c["border"])
-        self.reason_label = ctk.CTkLabel(
-            self.reason_box,
-            text="Sélectionne une piste pour voir pourquoi elle est proposée",
-            text_color=c["muted"], font=(FONT, 9), anchor="w", justify="left",
-            wraplength=560)
-        self.reason_label.pack(fill="x", padx=12, pady=7)
-
         self.cards.pack_forget()
-        self.reason_box.pack(side="bottom", fill="x", pady=(5, 4))
-        self.load_bar.pack(side="bottom", fill="x", pady=(4, 0))
+        self.load_bar.pack(side="bottom", fill="x", pady=(4, 6))
         self.cards.pack(fill="both", expand=True)
 
     # ------------------------------------------------------------------
@@ -1007,7 +996,7 @@ class SuggestionUI:
 
     def show_error(self, message):
         self.status_label.configure(text="● Erreur", text_color=COLORS["gold"])
-        self.reason_label.configure(text=message)
+        self.load_hint.configure(text=message, text_color=COLORS["gold"])
 
     # ------------------------------------------------------------------
     # Recherche dans le logiciel DJ
@@ -1180,7 +1169,6 @@ class SuggestionUI:
         chip_canvas.bind("<Configure>", paint)
 
         def select(_event=None, item=suggestion, selected=card, selected_tier=tier):
-            self.reason_label.configure(text=item.reason, text_color=c["muted"])
             self.selected_suggestion = item
             self._set_search_state("normal")
             self.load_hint.configure(text=f"Prêt à chercher : {item.title}",
