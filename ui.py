@@ -1,8 +1,9 @@
 """Interface du panneau Serato, séparée du contrôleur app.py.
 
 Identité unique : noir profond, nuances d'orange (ambre, sable, or pâle) et
-blanc cassé. Toute la logique (callbacks, pochettes, recherche, statistiques)
-est conservée ; ce module ne fait que la présenter.
+blanc cassé. Style « platine » : liserés fins, tranches de couleur, jauges LED,
+vinyle dessiné, égaliseur animé. Toute la logique (callbacks, pochettes,
+recherche, statistiques) est conservée ; ce module ne fait que la présenter.
 """
 from __future__ import annotations
 
@@ -37,7 +38,7 @@ COLORS = {
 FONT = "Segoe UI"
 FONT_BOLD = "Segoe UI Semibold"
 FONT_LIGHT = "Segoe UI Light"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.0.0"
 
 # Nom court de chaque palier, affiché sur la carte à côté du rang.
 TIER_LABELS = {
@@ -48,11 +49,11 @@ TIER_LABELS = {
 }
 ctk.set_appearance_mode("dark")
 
-# Rayons : arrondis francs mais cohérents d'un bloc à l'autre.
-RADIUS_TILE = 24
-RADIUS_CARD = 20
+# Rayons : arrondis généreux, cohérents d'un bloc à l'autre.
+RADIUS_TILE = 26
+RADIUS_CARD = 22
 RADIUS_ROW = 16
-RADIUS_THUMB = 12
+RADIUS_THUMB = 14
 
 
 def _hex_to_rgb(value):
@@ -78,9 +79,42 @@ def _rounded(canvas, x0, y0, x1, y1, radius, fill):
     canvas.create_polygon(points, fill=fill, outline=fill, smooth=True)
 
 
-def _soft(color, amount=0.85):
-    """Version très sombre d'un accent, pour les fonds de pastilles."""
-    return _blend(COLORS["background"], color, 1 - amount)
+class LedMeter(tk.Canvas):
+    """Jauge à segments façon VU-mètre : les segments s'allument en dégradé."""
+
+    def __init__(self, parent, background, color, segments=26, height=6):
+        super().__init__(parent, height=height, bg=background, highlightthickness=0, bd=0)
+        self._color = color
+        self._segments = segments
+        self._height = height
+        self._off = _blend(background, COLORS["border"], 0.7)
+        self._value = 0.0
+        self.bind("<Configure>", lambda _event: self._draw())
+
+    def set(self, fraction):
+        self._value = max(0.0, min(1.0, float(fraction)))
+        self._draw()
+
+    def _draw(self):
+        width = self.winfo_width()
+        if width <= 1:
+            return
+        self.delete("all")
+        gap = 3
+        count = self._segments
+        step = (width - gap * (count - 1)) / count
+        radius = self._height / 2
+        lit = self._value * count
+        for index in range(count):
+            x0 = index * (step + gap)
+            is_lit = index + 0.5 <= lit
+            color = (_blend(self._off, self._color, 0.42 + 0.58 * index / max(1, count - 1))
+                     if is_lit else self._off)
+            if step > self._height:
+                self.create_line(x0 + radius, radius, x0 + step - radius, radius,
+                                 fill=color, width=self._height, capstyle="round")
+            else:
+                self.create_rectangle(x0, 0, x0 + step, self._height, fill=color, outline="")
 
 
 class SuggestionUI:
@@ -101,7 +135,13 @@ class SuggestionUI:
         self._cover_targets = {}
         self._ring_cache = {}
         self._logo_cache = {}
+        self._vinyl_cache = {}
         self._chip_font = None
+        self._eq_active = False
+        self._eq_job = None
+        self._eq_tick = 0
+        self._eq_canvas = None
+        self._eq_bars = []
         self.profile_name = profile_name
         self.software = software
         self.topmost = True
@@ -174,11 +214,57 @@ class SuggestionUI:
         self._logo_cache[size] = image
         return image
 
-    def _waveform(self, parent, width=330, height=20, seed=7):
-        """Fine ligne de waveform décorative, façon platine."""
+    def _vinyl(self, size=80):
+        """Disque vinyle dessiné : sillons fins, étiquette orange, reflets."""
+        if size in self._vinyl_cache:
+            return self._vinyl_cache[size]
         c = COLORS
-        color = _blend(c["surface"], c["mint"], 0.55)
-        canvas = tk.Canvas(parent, width=width, height=height, bg=c["surface"],
+        scale = 4
+        full = size * scale
+        center = full / 2
+        disc = Image.new("RGBA", (full, full), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(disc)
+        base = _blend(c["background"], c["surface_2"], 0.5)
+        draw.ellipse((0, 0, full - 1, full - 1), fill=base)
+        groove = _blend(base, c["border"], 0.75)
+        radius = full * 0.47
+        while radius > full * 0.23:
+            draw.ellipse((center - radius, center - radius, center + radius, center + radius),
+                         outline=groove, width=1)
+            radius -= full * 0.022
+        draw.ellipse((1, 1, full - 2, full - 2), outline=_blend(base, c["border_hover"], 0.5),
+                     width=max(2, scale))
+        label = full * 0.19
+        draw.ellipse((center - label, center - label, center + label, center + label),
+                     fill=c["mint"])
+        ring = full * 0.12
+        draw.ellipse((center - ring, center - ring, center + ring, center + ring),
+                     outline=_blend(c["mint"], c["background"], 0.35), width=max(2, scale // 2))
+        hole = full * 0.035
+        draw.ellipse((center - hole, center - hole, center + hole, center + hole),
+                     fill=c["background"])
+        # Reflets : deux secteurs très translucides, limités au disque.
+        shine = Image.new("RGBA", (full, full), (0, 0, 0, 0))
+        shine_draw = ImageDraw.Draw(shine)
+        for start, end, alpha in ((205, 245, 16), (25, 65, 11)):
+            shine_draw.pieslice((0, 0, full - 1, full - 1), start, end,
+                                fill=(255, 238, 220, alpha))
+        mask = Image.new("L", (full, full), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, full - 1, full - 1), fill=255)
+        shine.putalpha(Image.composite(shine.getchannel("A"), Image.new("L", (full, full), 0), mask))
+        disc = Image.alpha_composite(disc, shine)
+        image = ctk.CTkImage(light_image=disc, dark_image=disc, size=(size, size))
+        self._vinyl_cache[size] = image
+        return image
+
+    def _waveform(self, parent, width=330, height=20, seed=7, background=None, progress=0.62):
+        """Waveform décorative : partie « jouée » en orange, reste en sourdine,
+        avec une tête de lecture fine."""
+        c = COLORS
+        background = background or c["surface"]
+        played = c["mint"]
+        rest = _blend(background, c["muted"], 0.28)
+        canvas = tk.Canvas(parent, width=width, height=height, bg=background,
                            highlightthickness=0, bd=0)
         values = []
         state = seed * 7919
@@ -187,11 +273,15 @@ class SuggestionUI:
             values.append(0.22 + 0.78 * ((state >> 16) % 1000) / 1000)
         step = width / len(values)
         middle = height / 2
+        head = int(len(values) * progress)
         for index, value in enumerate(values):
             x = index * step + step / 2
             half = max(1.5, (height / 2 - 1) * value)
             canvas.create_line(x, middle - half, x, middle + half,
-                               fill=color, width=max(1, step * 0.4), capstyle="round")
+                               fill=played if index < head else rest,
+                               width=max(1, step * 0.4), capstyle="round")
+        x = head * step
+        canvas.create_line(x, 0, x, height, fill=c["text"], width=1)
         return canvas
 
     def _chip(self, icon, text, height=20):
@@ -228,6 +318,62 @@ class SuggestionUI:
                                    font=font, anchor="center")
             x += width + 5
 
+    def _build_equalizer(self, parent, background):
+        """Petit égaliseur : s'anime tant qu'un morceau est en cours."""
+        canvas = tk.Canvas(parent, width=22, height=14, bg=background,
+                           highlightthickness=0, bd=0)
+        self._eq_canvas = canvas
+        self._eq_bars = [
+            canvas.create_line(3 + index * 5, 13, 3 + index * 5, 10, width=3,
+                               capstyle="round", fill=COLORS["dim"])
+            for index in range(4)]
+        return canvas
+
+    def _paint_equalizer(self):
+        for index, bar in enumerate(self._eq_bars):
+            if self._eq_active:
+                wave = 0.5 + 0.5 * math.sin(self._eq_tick * 0.55 + index * 1.7)
+                wave *= 0.55 + 0.45 * math.sin(self._eq_tick * 0.21 + index * 0.9)
+                height = 3 + 9 * max(0.0, min(1.0, wave))
+                color = COLORS["mint"]
+            else:
+                height, color = 3, COLORS["dim"]
+            x = 3 + index * 5
+            self._eq_canvas.coords(bar, x, 13, x, 13 - height)
+            self._eq_canvas.itemconfigure(bar, fill=color)
+
+    def _set_equalizer(self, active):
+        active = bool(active)
+        if self._eq_canvas is None:
+            return
+        if active == self._eq_active:
+            return
+        self._eq_active = active
+        if self._eq_job is not None:
+            try:
+                self.root.after_cancel(self._eq_job)
+            except (ValueError, tk.TclError):
+                pass
+            self._eq_job = None
+        if active:
+            self._eq_loop()
+        else:
+            try:
+                self._paint_equalizer()
+            except tk.TclError:
+                pass
+
+    def _eq_loop(self):
+        if not self._eq_active:
+            return
+        self._eq_tick += 1
+        try:
+            self._paint_equalizer()
+        except tk.TclError:
+            self._eq_active = False
+            return
+        self._eq_job = self.root.after(90, self._eq_loop)
+
     # ------------------------------------------------------------------
     # Accueil
     # ------------------------------------------------------------------
@@ -237,102 +383,109 @@ class SuggestionUI:
                                        corner_radius=0, **self._scrollbar(c["background"]))
         shell.pack(fill="both", expand=True, padx=14, pady=10)
 
-        # Barre du haut : logo, nom, profil
+        # Barre du haut : logo, nom en deux tons, profil
         top = ctk.CTkFrame(shell, fg_color="transparent", corner_radius=0)
-        top.pack(fill="x", pady=(0, 12))
-        mark = ctk.CTkFrame(top, width=38, height=38, fg_color=c["surface"],
-                            corner_radius=12, border_width=1, border_color=c["border"])
+        top.pack(fill="x", pady=(0, 14))
+        mark = ctk.CTkFrame(top, width=42, height=42, fg_color=c["surface"],
+                            corner_radius=21, border_width=1, border_color=c["border"])
         mark.pack(side="left")
         mark.pack_propagate(False)
-        ctk.CTkLabel(mark, text="", image=self._logo(28)).pack(expand=True)
+        ctk.CTkLabel(mark, text="", image=self._logo(30)).pack(expand=True)
         brand = ctk.CTkFrame(top, fg_color="transparent", corner_radius=0)
-        brand.pack(side="left", padx=10, fill="y")
-        ctk.CTkLabel(brand, text="Harmonic Mix", text_color=c["text"],
-                     font=(FONT_BOLD, 15), anchor="w").pack(anchor="w", pady=(2, 0))
+        brand.pack(side="left", padx=11, fill="y")
+        wordmark = ctk.CTkFrame(brand, fg_color="transparent", corner_radius=0)
+        wordmark.pack(anchor="w", pady=(2, 0))
+        ctk.CTkLabel(wordmark, text="Harmonic", text_color=c["text"],
+                     font=(FONT_BOLD, 16)).pack(side="left")
+        ctk.CTkLabel(wordmark, text=" Mix", text_color=c["mint"],
+                     font=(FONT_BOLD, 16)).pack(side="left")
         self.home_software_caption = ctk.CTkLabel(
             brand, text="Compagnon de mix", text_color=c["muted"],
             font=(FONT, 10), anchor="w")
         self.home_software_caption.pack(anchor="w")
         self.home_profile_button = ctk.CTkButton(
             top, text=f"{self.profile_name}  ▾", command=self.on_profile_select,
-            width=94, height=32, corner_radius=16, fg_color=c["surface"],
+            width=96, height=34, corner_radius=17, fg_color=c["surface"],
             hover_color=c["surface_hover"], text_color=c["text"],
             font=(FONT_BOLD, 11), border_width=1, border_color=c["border"])
         self.home_profile_button.pack(side="right", anchor="n")
 
-        # Salutation : une seule ligne de titre, waveform discrète dessous
+        # Salutation : vinyle à droite, waveform « en lecture » dessous
         hero = ctk.CTkFrame(shell, fg_color=c["surface"], corner_radius=RADIUS_TILE,
-                            border_width=1, border_color=c["border"], height=96)
+                            border_width=1, border_color=c["border"], height=112)
         hero.pack(fill="x", pady=(0, 10))
         # Hauteur fixée : sans elle, la waveform (Canvas) fait gonfler la tuile.
         hero.pack_propagate(False)
-        accent = ctk.CTkFrame(hero, width=3, fg_color=c["mint"], corner_radius=2)
-        accent.pack(side="left", fill="y", padx=(12, 0), pady=13)
+        accent = ctk.CTkFrame(hero, width=3, height=1, fg_color=c["mint"], corner_radius=2)
+        accent.pack(side="left", fill="y", padx=(14, 0), pady=16)
+        ctk.CTkLabel(hero, text="", image=self._vinyl(82), fg_color="transparent").pack(
+            side="right", padx=(0, 18))
         hero_body = ctk.CTkFrame(hero, fg_color="transparent", corner_radius=0)
-        hero_body.pack(side="left", fill="both", expand=True, padx=13, pady=(11, 10))
+        hero_body.pack(side="left", fill="both", expand=True, padx=14, pady=(14, 12))
         greeting = ctk.CTkFrame(hero_body, fg_color="transparent", corner_radius=0)
         greeting.pack(fill="x")
         ctk.CTkLabel(greeting, text="BONJOUR", text_color=c["mint"],
-                     font=(FONT_BOLD, 10), anchor="w").pack(side="left")
+                     font=(FONT_BOLD, 10), anchor="w").pack(side="left", pady=(7, 0))
         self.home_username_label = ctk.CTkLabel(
             greeting, text=f" {self.profile_name}", text_color=c["text"],
-            font=(FONT_LIGHT, 24), anchor="w")
+            font=(FONT_LIGHT, 28), anchor="w")
         self.home_username_label.pack(side="left")
         ctk.CTkLabel(hero_body, text="Le morceau qui s'enchaîne naturellement.",
                      text_color=c["muted"], font=(FONT, 10), anchor="w").pack(
-                         anchor="w", pady=(0, 8))
-        self._waveform(hero_body, width=290, height=14, seed=3).pack(anchor="w")
+                         anchor="w", pady=(0, 9))
+        self._waveform(hero_body, width=214, height=16, seed=3).pack(anchor="w")
 
-        # Choix du logiciel : deux tuiles courtes + Dashboard à droite
-        software_row = ctk.CTkFrame(shell, fg_color="transparent", corner_radius=0)
-        software_row.pack(fill="x", pady=(0, 10))
+        # Choix du logiciel : contrôle segmenté, Dashboard en bout de piste
+        track = ctk.CTkFrame(shell, fg_color=c["surface"], corner_radius=28,
+                             border_width=1, border_color=c["border"])
+        track.pack(fill="x", pady=(0, 10))
         self.software_buttons = {}
         for software_id, label in (("serato", "Serato DJ"), ("traktor", "Traktor")):
             button = ctk.CTkButton(
-                software_row, text=label,
+                track, text=label,
                 command=lambda selected=software_id: self.on_software_select(selected),
-                height=46, corner_radius=14, fg_color=c["surface"],
+                height=42, corner_radius=21, fg_color=c["surface"],
                 hover_color=c["surface_hover"], text_color=c["muted"],
-                font=(FONT_BOLD, 12), border_width=1, border_color=c["border"])
-            button.pack(side="left", fill="x", expand=True,
-                        padx=(0 if software_id == "serato" else 4,
-                              4 if software_id == "serato" else 0))
+                font=(FONT_BOLD, 12), border_width=1, border_color=c["surface"])
+            button.pack(side="left", fill="x", expand=True, padx=(5 if software_id == "serato" else 2, 2),
+                        pady=5)
             self.software_buttons[software_id] = button
+        ctk.CTkFrame(track, width=1, height=22, fg_color=c["border"],
+                     corner_radius=0).pack(side="left", padx=4)
         self.dashboard_choice_button = ctk.CTkButton(
-            software_row, text="Dashboard  ›", command=self.on_stats, height=46,
-            corner_radius=14, fg_color=c["surface"], hover_color=c["surface_hover"],
-            text_color=c["gold"], font=(FONT_BOLD, 12), width=112,
-            border_width=1, border_color=c["gold_dark"])
-        self.dashboard_choice_button.pack(side="left", padx=(4, 0))
+            track, text="Dashboard  ›", command=self.on_stats, height=42, width=112,
+            corner_radius=21, fg_color=c["surface"], hover_color=c["gold_dark"],
+            text_color=c["gold"], font=(FONT_BOLD, 12), border_width=0)
+        self.dashboard_choice_button.pack(side="left", padx=(2, 5), pady=5)
         self._update_software_buttons()
 
-        # Dernière session : compacte
+        # Dernière session
         self.home_status_card = ctk.CTkFrame(shell, fg_color=c["surface_2"],
-                                             corner_radius=RADIUS_ROW,
+                                             corner_radius=RADIUS_CARD,
                                              border_width=1, border_color=c["border"])
-        self.home_status_card.pack(fill="x", pady=(0, 10))
+        self.home_status_card.pack(fill="x", pady=(0, 12))
         self.home_status_label = ctk.CTkLabel(
             self.home_status_card, text="Dernière session", text_color=c["violet"],
-            font=(FONT_BOLD, 9), anchor="w")
-        self.home_status_label.pack(anchor="w", padx=14, pady=(10, 1))
+            font=(FONT_BOLD, 10), anchor="w")
+        self.home_status_label.pack(anchor="w", padx=18, pady=(14, 2))
         self.home_track_label = ctk.CTkLabel(
             self.home_status_card, text="Aucune session détectée", text_color=c["text"],
-            font=(FONT_BOLD, 15), anchor="w", justify="left", wraplength=330)
-        self.home_track_label.pack(fill="x", padx=14)
+            font=(FONT_BOLD, 17), anchor="w", justify="left", wraplength=330)
+        self.home_track_label.pack(fill="x", padx=18)
         self.home_detail_label = ctk.CTkLabel(
             self.home_status_card, text="Choisis Serato DJ ou Traktor ci-dessus",
-            text_color=c["muted"], font=(FONT, 10), anchor="w", justify="left",
+            text_color=c["muted"], font=(FONT, 11), anchor="w", justify="left",
             wraplength=330)
-        self.home_detail_label.pack(fill="x", padx=14, pady=(1, 10))
+        self.home_detail_label.pack(fill="x", padx=18, pady=(2, 14))
 
         self.home_open_button = ctk.CTkButton(
             shell, text="Découvrir mes suggestions   →", command=self.show_dashboard,
-            height=44, corner_radius=22, fg_color=c["mint"],
+            height=50, corner_radius=25, fg_color=c["mint"],
             hover_color=_blend(c["mint"], "#FFFFFF", 0.16), text_color="#14100C",
-            font=(FONT_BOLD, 12), border_width=0)
-        self.home_open_button.pack(fill="x", pady=(0, 7))
+            font=(FONT_BOLD, 13), border_width=0)
+        self.home_open_button.pack(fill="x", pady=(0, 8))
         ctk.CTkLabel(shell, text="Choisis une piste, puis cherche-la dans ton logiciel DJ.",
-                     text_color=c["dim"], font=(FONT, 9), anchor="center").pack(fill="x")
+                     text_color=c["dim"], font=(FONT, 10), anchor="center").pack(fill="x")
 
     # ------------------------------------------------------------------
     # Suggestions
@@ -346,8 +499,12 @@ class SuggestionUI:
         header.pack(fill="x", pady=(0, 10))
         brand = ctk.CTkFrame(header, fg_color="transparent", corner_radius=0)
         brand.pack(side="left", fill="x", expand=True)
-        ctk.CTkLabel(brand, text="Harmonic Mix", text_color=c["text"],
-                     font=(FONT_BOLD, 17), anchor="w").pack(anchor="w")
+        wordmark = ctk.CTkFrame(brand, fg_color="transparent", corner_radius=0)
+        wordmark.pack(anchor="w")
+        ctk.CTkLabel(wordmark, text="Harmonic", text_color=c["text"],
+                     font=(FONT_BOLD, 18)).pack(side="left")
+        ctk.CTkLabel(wordmark, text=" Mix", text_color=c["mint"],
+                     font=(FONT_BOLD, 18)).pack(side="left")
         ctk.CTkLabel(brand, text="La prochaine piste, en harmonie avec ton set",
                      text_color=c["muted"], font=(FONT, 10), anchor="w").pack(
                          anchor="w", pady=(1, 0))
@@ -359,33 +516,34 @@ class SuggestionUI:
         self.pin_button.pack(side="right", anchor="n")
 
         now = ctk.CTkFrame(shell, fg_color=c["surface"], corner_radius=RADIUS_TILE,
-                           border_width=1, border_color=c["border"], height=86)
+                           border_width=1, border_color=c["border"], height=92)
         now.pack(fill="x", pady=(0, 10))
         now.pack_propagate(False)
-        accent = ctk.CTkFrame(now, width=3, fg_color=c["mint"], corner_radius=2)
-        accent.pack(side="left", fill="y", padx=(11, 0), pady=12)
+        accent = ctk.CTkFrame(now, width=3, height=1, fg_color=c["mint"], corner_radius=2)
+        accent.pack(side="left", fill="y", padx=(12, 0), pady=14)
         self.current_cover_label = ctk.CTkLabel(
-            now, text="HM", width=56, height=56, fg_color=c["surface_2"],
+            now, text="HM", width=60, height=60, fg_color=c["surface_2"],
             text_color=c["violet"], corner_radius=RADIUS_THUMB + 2, font=(FONT_BOLD, 13))
-        self.current_cover_label.pack(side="left", padx=(11, 0), pady=14)
+        self.current_cover_label.pack(side="left", padx=(12, 0), pady=16)
         current = ctk.CTkFrame(now, fg_color="transparent", corner_radius=0)
-        current.pack(side="left", fill="both", expand=True, padx=12, pady=9)
+        current.pack(side="left", fill="both", expand=True, padx=13, pady=10)
         current_header = ctk.CTkFrame(current, fg_color="transparent", corner_radius=0)
         current_header.pack(fill="x")
         self.current_section_label = ctk.CTkLabel(
             current_header, text="Dernière piste", text_color=c["muted"],
             font=(FONT_BOLD, 10), anchor="w")
         self.current_section_label.pack(side="left")
+        self._build_equalizer(current_header, c["surface"]).pack(side="left", padx=(8, 0))
         self.status_label = ctk.CTkLabel(current_header, text="", text_color=c["mint"],
                                          font=(FONT_BOLD, 9), anchor="e")
         self.status_label.pack(side="right")
         self.current_label = ctk.CTkLabel(
             current, text="En attente de Serato", text_color=c["text"],
-            font=(FONT_BOLD, 16), anchor="w", justify="left", wraplength=250)
+            font=(FONT_BOLD, 17), anchor="w", justify="left", wraplength=240)
         self.current_label.pack(fill="x", pady=(3, 0))
         self.detail_label = ctk.CTkLabel(
             current, text="", text_color=c["muted"], font=(FONT, 10), anchor="w",
-            justify="left", wraplength=240)
+            justify="left", wraplength=230)
         self.detail_label.pack(fill="x")
 
         section = ctk.CTkFrame(shell, fg_color="transparent", corner_radius=0)
@@ -417,14 +575,25 @@ class SuggestionUI:
         self.load_hint.pack(fill="x", padx=3, pady=(0, 3))
         self.search_button = ctk.CTkButton(
             self.load_bar, text="⌕  Chercher dans Serato", state="disabled",
-            command=self._search_selected, height=38, corner_radius=19,
+            command=self._search_selected, height=40, corner_radius=20,
             fg_color=c["surface"], hover_color=_blend(c["mint"], "#FFFFFF", 0.16),
             text_color=c["dim"], text_color_disabled=c["dim"],
             font=(FONT_BOLD, 12), border_width=1, border_color=c["border"])
         self.search_button.pack(fill="x")
 
+        # Explication de la piste sélectionnée : un seul bloc, une ligne ou deux.
+        self.reason_box = ctk.CTkFrame(shell, fg_color=c["surface"], corner_radius=14,
+                                       border_width=1, border_color=c["border"])
+        self.reason_label = ctk.CTkLabel(
+            self.reason_box,
+            text="Sélectionne une piste pour voir pourquoi elle est proposée",
+            text_color=c["muted"], font=(FONT, 9), anchor="w", justify="left",
+            wraplength=560)
+        self.reason_label.pack(fill="x", padx=14, pady=8)
+
         self.cards.pack_forget()
-        self.load_bar.pack(side="bottom", fill="x", pady=(4, 6))
+        self.reason_box.pack(side="bottom", fill="x", pady=(5, 4))
+        self.load_bar.pack(side="bottom", fill="x", pady=(4, 0))
         self.cards.pack(fill="both", expand=True)
 
     # ------------------------------------------------------------------
@@ -439,8 +608,12 @@ class SuggestionUI:
         header.pack(fill="x", pady=(0, 20))
         heading = ctk.CTkFrame(header, fg_color="transparent", corner_radius=0)
         heading.pack(side="left", fill="x", expand=True)
-        ctk.CTkLabel(heading, text=f"Harmonic Mix  /  Dashboard  ·  v{APP_VERSION}",
-                     text_color=c["text"], font=(FONT_LIGHT, 27), anchor="w").pack(anchor="w")
+        title_row = ctk.CTkFrame(heading, fg_color="transparent", corner_radius=0)
+        title_row.pack(anchor="w")
+        ctk.CTkLabel(title_row, text="Harmonic Mix", text_color=c["text"],
+                     font=(FONT_LIGHT, 30)).pack(side="left")
+        ctk.CTkLabel(title_row, text=f"  /  Dashboard  ·  v{APP_VERSION}",
+                     text_color=c["mint"], font=(FONT_LIGHT, 30)).pack(side="left")
         ctk.CTkLabel(heading, text="Analyse de tes sets et de l'évolution de tes styles musicaux",
                      text_color=c["muted"], font=(FONT, 12), anchor="w").pack(anchor="w", pady=(4, 0))
         self.stats_software_label = ctk.CTkLabel(
@@ -475,19 +648,18 @@ class SuggestionUI:
             card.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 10, 0))
             kpi_row.grid_columnconfigure(index, weight=1, uniform="kpi")
             ctk.CTkLabel(card, text=title, text_color=c["muted"],
-                         font=(FONT_BOLD, 11), anchor="w").pack(anchor="w", padx=18,
+                         font=(FONT_BOLD, 11), anchor="w").pack(anchor="w", padx=20,
                                                                 pady=(16, 2))
             icon = tk.Canvas(card, width=32, height=32, bg=c["surface"],
                              highlightthickness=0, bd=0)
-            icon.place(relx=1.0, x=-16, y=14, anchor="ne")
+            icon.place(relx=1.0, x=-18, y=14, anchor="ne")
             self._draw_kpi_icon(icon, key, accent, c["surface"])
             value = ctk.CTkLabel(card, text="—", text_color=c["text"],
-                                 font=(FONT_LIGHT, 36), anchor="w")
-            value.pack(anchor="w", padx=18, pady=(0, 4))
-            bar = ctk.CTkProgressBar(card, height=3, corner_radius=2,
-                                     fg_color=c["progress_bg"], progress_color=accent)
-            bar.pack(fill="x", padx=18, pady=(0, 14))
-            bar.set(1)
+                                 font=(FONT_LIGHT, 38), anchor="w")
+            value.pack(anchor="w", padx=20, pady=(0, 6))
+            meter = LedMeter(card, c["surface"], accent, segments=20, height=5)
+            meter.pack(fill="x", padx=20, pady=(0, 16))
+            meter.set(1)
             self.stats_kpi_values[key] = value
 
         analytics = ctk.CTkFrame(body, fg_color="transparent", corner_radius=0)
@@ -500,7 +672,7 @@ class SuggestionUI:
         transitions_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         ctk.CTkLabel(transitions_card, text="Enchaînements les plus fréquents",
                      text_color=c["text"], font=(FONT_BOLD, 14), anchor="w").pack(
-                         anchor="w", padx=20, pady=(16, 8))
+                         anchor="w", padx=22, pady=(18, 8))
         self.stats_transitions_list = ctk.CTkScrollableFrame(
             transitions_card, fg_color="transparent", corner_radius=0,
             **self._scrollbar(c["surface"]))
@@ -512,7 +684,7 @@ class SuggestionUI:
         destinations_card.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
         ctk.CTkLabel(destinations_card, text="Pistes les plus souvent enchaînées",
                      text_color=c["text"], font=(FONT_BOLD, 14), anchor="w",
-                     wraplength=320, justify="left").pack(anchor="w", padx=20, pady=(16, 8))
+                     wraplength=320, justify="left").pack(anchor="w", padx=22, pady=(18, 8))
         self.stats_destinations_list = ctk.CTkScrollableFrame(
             destinations_card, fg_color="transparent", corner_radius=0,
             **self._scrollbar(c["surface"]))
@@ -523,14 +695,14 @@ class SuggestionUI:
         trend_card.pack(fill="x", pady=(12, 0))
         ctk.CTkLabel(trend_card, text="Styles musicaux au fil des sets",
                      text_color=c["text"], font=(FONT_BOLD, 14), anchor="w").pack(
-                         anchor="w", padx=20, pady=(16, 0))
+                         anchor="w", padx=22, pady=(18, 0))
         ctk.CTkLabel(trend_card,
                      text="Évolution des genres par set · titres, transitions et BPM moyen à droite.",
                      text_color=c["muted"], font=(FONT, 11), anchor="w").pack(
-                         anchor="w", padx=20, pady=(3, 0))
+                         anchor="w", padx=22, pady=(3, 0))
         self.stats_genre_chart = tk.Canvas(trend_card, height=430, bg=c["surface"],
                                            highlightthickness=0, bd=0)
-        self.stats_genre_chart.pack(fill="x", padx=16, pady=(2, 14))
+        self.stats_genre_chart.pack(fill="x", padx=18, pady=(2, 14))
 
         self.stats_footer = ctk.CTkLabel(
             body, text="Les statistiques sont calculées localement depuis ton historique.",
@@ -544,7 +716,7 @@ class SuggestionUI:
             value = int(stats[key])
             label.configure(
                 text=self._format_metric(value),
-                font=(FONT_LIGHT, 36 if value < 100_000 else 28 if value < 10_000_000 else 22))
+                font=(FONT_LIGHT, 38 if value < 100_000 else 30 if value < 10_000_000 else 24))
         for widget in self.stats_transitions_list.winfo_children():
             widget.destroy()
         for widget in self.stats_destinations_list.winfo_children():
@@ -558,7 +730,8 @@ class SuggestionUI:
                              fill="x", padx=10, pady=16)
         for rank, row in enumerate(top, 1):
             line = ctk.CTkFrame(self.stats_transitions_list, fg_color=c["surface_2"],
-                                corner_radius=RADIUS_ROW)
+                                corner_radius=RADIUS_ROW, border_width=1,
+                                border_color=c["border"])
             line.pack(fill="x", padx=2, pady=3)
             ctk.CTkLabel(line, text=f"{rank:02}", width=30, height=30, corner_radius=15,
                          fg_color=c["mint_dark"], text_color=c["mint"],
@@ -593,7 +766,8 @@ class SuggestionUI:
                              fill="x", padx=10, pady=16)
         for rank, item in enumerate(destinations, 1):
             row = ctk.CTkFrame(self.stats_destinations_list, fg_color=c["surface_2"],
-                               corner_radius=RADIUS_ROW)
+                               corner_radius=RADIUS_ROW, border_width=1,
+                               border_color=c["border"])
             row.pack(fill="x", padx=2, pady=3)
             ctk.CTkLabel(row, text=f"{rank:02}", width=30, height=30, corner_radius=15,
                          fg_color=c["violet_dark"], text_color=c["violet"],
@@ -750,7 +924,7 @@ class SuggestionUI:
         box = (pad, pad, full - pad, full - pad)
         image = Image.new("RGBA", (full, full), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
-        draw.ellipse(box, outline=_blend(COLORS["surface_2"], color, 0.25), width=stroke)
+        draw.ellipse(box, outline=_blend(COLORS["surface"], color, 0.22), width=stroke)
         percent = key[0]
         if percent > 0:
             end = -90 + 360 * percent / 100
@@ -992,11 +1166,11 @@ class SuggestionUI:
             button.configure(
                 fg_color=c["mint_dark"] if selected else c["surface"],
                 text_color=c["mint"] if selected else c["muted"],
-                border_color=c["mint"] if selected else c["border"])
+                border_color=c["mint"] if selected else c["surface"])
 
     def show_error(self, message):
         self.status_label.configure(text="● Erreur", text_color=COLORS["gold"])
-        self.load_hint.configure(text=message, text_color=COLORS["gold"])
+        self.reason_label.configure(text=message)
 
     # ------------------------------------------------------------------
     # Recherche dans le logiciel DJ
@@ -1043,7 +1217,8 @@ class SuggestionUI:
             text="En cours" if is_playing else "Dernière session",
             text_color=COLORS["mint"] if is_playing else COLORS["muted"])
         self.status_label.configure(text=status, text_color=status_color)
-        self._request_cover(cover_path, self.current_cover_label, 56)
+        self._set_equalizer(is_playing)
+        self._request_cover(cover_path, self.current_cover_label, 60)
         self._render_cards(suggestions)
 
     def _render_cards(self, suggestions):
@@ -1071,8 +1246,9 @@ class SuggestionUI:
             self._build_card(rank, suggestion)
 
     def _build_card(self, rank, suggestion):
-        """Carte de suggestion : pochette, informations, anneau de score animé,
-        jauge de compatibilité puis pastilles tempo / tonalité / habitude."""
+        """Carte de suggestion : tranche de couleur du palier, pochette,
+        informations, anneau de score animé, jauge LED de compatibilité puis
+        pastilles tempo / tonalité / habitude."""
         c = COLORS
         tier = c[suggestion.category]
         tier_bg = c[f"{suggestion.category}_dark"]
@@ -1094,14 +1270,20 @@ class SuggestionUI:
         card.pack(fill="x", padx=2, pady=4)
         self._cards.append((card, tier))
 
-        body = ctk.CTkFrame(card, fg_color="transparent", corner_radius=0)
-        body.pack(fill="x", padx=12, pady=(10, 0))
+        # Tranche verticale à la couleur du palier (comme une voie de console).
+        spine = ctk.CTkFrame(card, width=4, height=1, fg_color=tier, corner_radius=2)
+        spine.pack(side="left", fill="y", padx=(11, 0), pady=14)
+        content = ctk.CTkFrame(card, fg_color="transparent", corner_radius=0)
+        content.pack(side="left", fill="both", expand=True)
 
-        cover_label = ctk.CTkLabel(body, text="HM", width=54, height=54,
+        body = ctk.CTkFrame(content, fg_color="transparent", corner_radius=0)
+        body.pack(fill="x", padx=12, pady=(11, 0))
+
+        cover_label = ctk.CTkLabel(body, text="HM", width=56, height=56,
                                    fg_color=c["surface_2"], text_color=tier,
                                    corner_radius=RADIUS_THUMB, font=(FONT_BOLD, 12))
         cover_label.pack(side="left", padx=(0, 11), anchor="n")
-        self._request_cover(suggestion.path, cover_label, 54)
+        self._request_cover(suggestion.path, cover_label, 56)
 
         info = ctk.CTkFrame(body, fg_color="transparent", corner_radius=0)
         info.pack(side="left", fill="x", expand=True)
@@ -1117,22 +1299,21 @@ class SuggestionUI:
 
         title_label = ctk.CTkLabel(info, text=suggestion.title, text_color=c["text"],
                                    font=(FONT_BOLD, 13), anchor="w", justify="left",
-                                   wraplength=252)
+                                   wraplength=225)
         title_label.pack(fill="x", pady=(4, 0))
         artist_label = ctk.CTkLabel(info, text=suggestion.artist or "Artiste non renseigné",
                                     text_color=c["muted"], font=(FONT, 10), anchor="w",
-                                    justify="left", wraplength=252)
+                                    justify="left", wraplength=225)
         artist_label.pack(fill="x")
 
-        score_label = ctk.CTkLabel(body, text="0", width=54, height=54,
+        score_label = ctk.CTkLabel(body, text="0", width=56, height=56,
                                    image=self._score_ring(0, tier), compound="center",
                                    fg_color="transparent", text_color=tier,
                                    font=(FONT_BOLD, 13))
         score_label.pack(side="right", anchor="n", padx=(8, 0))
 
-        meter = ctk.CTkProgressBar(card, height=3, corner_radius=2,
-                                   fg_color=c["progress_bg"], progress_color=tier)
-        meter.pack(fill="x", padx=13, pady=(8, 0))
+        meter = LedMeter(content, c["surface"], tier, segments=28, height=5)
+        meter.pack(fill="x", padx=14, pady=(10, 0))
         meter.set(0)
 
         chips = []
@@ -1153,8 +1334,8 @@ class SuggestionUI:
         else:
             chips.append(("+", "JAMAIS ENCHAÎNÉE", tier_bg, tier))
 
-        chip_canvas = tk.Canvas(card, height=26, bg=c["surface"], highlightthickness=0, bd=0)
-        chip_canvas.pack(fill="x", padx=13, pady=(6, 10))
+        chip_canvas = tk.Canvas(content, height=26, bg=c["surface"], highlightthickness=0, bd=0)
+        chip_canvas.pack(fill="x", padx=14, pady=(8, 12))
 
         def paint(_event=None, data=chips):
             try:
@@ -1169,6 +1350,7 @@ class SuggestionUI:
         chip_canvas.bind("<Configure>", paint)
 
         def select(_event=None, item=suggestion, selected=card, selected_tier=tier):
+            self.reason_label.configure(text=item.reason, text_color=c["muted"])
             self.selected_suggestion = item
             self._set_search_state("normal")
             self.load_hint.configure(text=f"Prêt à chercher : {item.title}",
@@ -1204,8 +1386,9 @@ class SuggestionUI:
             if frame is not self._selected:
                 self._tween_card(frame, frame._hm_rest)
 
-        for widget in (card, body, cover_label, info, head, rank_label, tier_label,
-                       title_label, artist_label, score_label, chip_canvas):
+        for widget in (card, spine, content, body, cover_label, info, head, rank_label,
+                       tier_label, title_label, artist_label, score_label, meter,
+                       chip_canvas):
             widget.bind("<Button-1>", select, add="+")
             widget.bind("<Double-Button-1>", quick_search, add="+")
             widget.bind("<Enter>", enter, add="+")
